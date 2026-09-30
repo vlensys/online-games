@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
-import { Track, sectionSpeed, GRAVITY, BALL_R } from './track.js';
+import { Track, sectionSpeed, GRAVITY, BALL_R, POWERUPS } from './track.js';
 import { sphereTouchesBox, boundsOverlapSphere, topHeightBelow } from './physics.js';
 import { createBall, stepController, COYOTE, JUMP_BUFFER, DASH_CD, PHASE_TIME } from './ball.js';
 import { InstancedPool, createTileMaterial, createHazardMaterial, createTowerMaterial, createPadMaterial, Background, Trail, Particles, Shards, LandingMarker, makeSign } from './render.js';
@@ -19,7 +19,7 @@ const STEP = 1 / 120;
 const THEMES = [
   { neon: '#1eff3c', ui: '30, 255, 60' },
   { neon: '#1ee4ff', ui: '30, 228, 255' },
-  { neon: '#ffe01e', ui: '255, 224, 30' },
+  { neon: '#a066ff', ui: '160, 102, 255' },
   { neon: '#ff3cf0', ui: '255, 60, 240' },
   { neon: '#ff8c1e', ui: '255, 140, 30' },
   { neon: '#4a78ff', ui: '74, 120, 255' },
@@ -90,26 +90,67 @@ const unitBox = new THREE.BoxGeometry(1, 1, 1);
 const pools = {
   tiles: new InstancedPool(unitBox, tileMat, 1100),
   hazards: new InstancedPool(unitBox, hazardMat, 500),
-  towers: new InstancedPool(unitBox, towerMat, 1200),
+  towers: new InstancedPool(unitBox, towerMat, 2400),
   pads: new InstancedPool(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), createPadMaterial(), 16),
   gems: new InstancedPool(
-    new THREE.OctahedronGeometry(0.55, 0),
-    new THREE.MeshStandardMaterial({ color: '#7fe6ff', emissive: '#0b6f8a', emissiveIntensity: 0.6, metalness: 0.3, roughness: 0.3, flatShading: true }),
-    300
+    new THREE.CylinderGeometry(0.62, 0.62, 0.16, 20).rotateX(Math.PI / 2),
+    new THREE.MeshStandardMaterial({ color: '#ffc928', emissive: '#7a4a00', emissiveIntensity: 0.9, metalness: 0.85, roughness: 0.3 }),
+    400
   ),
 };
 scene.add(pools.tiles.mesh, pools.hazards.mesh, pools.gems.mesh, pools.towers.mesh, pools.pads.mesh);
 
-function makeShieldPickup() {
+// Power-up pickups: each has its own shape and colour so they read at a glance.
+const POWER_INFO = {
+  shield: { label: 'SHIELD', color: '#46c8e6', time: 0 },
+  magnet: { label: 'MAGNET', color: '#ff4d4d', time: 10 },
+  double: { label: '2X POINTS', color: '#ffd23f', time: 12 },
+  slowmo: { label: 'SLOW-MO', color: '#b36bff', time: 5 },
+};
+function makePickup(type) {
   const g = new THREE.Group();
-  const cage = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.IcosahedronGeometry(0.9, 0)), new THREE.LineBasicMaterial({ color: '#46e6ff' }));
-  const core = new THREE.Mesh(new THREE.IcosahedronGeometry(0.5, 1), new THREE.MeshStandardMaterial({ color: '#7fe6ff', emissive: '#0b6f8a', emissiveIntensity: 0.6, flatShading: true }));
-  g.add(cage, core);
-  g.userData.spin = true;
+  const c = POWER_INFO[type].color;
+  const mat = new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: 0.55, metalness: 0.3, roughness: 0.4, flatShading: true });
+  const cage = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.IcosahedronGeometry(1.05, 0)), new THREE.LineBasicMaterial({ color: c }));
+  g.add(cage);
+  if (type === 'shield') g.add(new THREE.Mesh(new THREE.IcosahedronGeometry(0.5, 1), mat));
+  else if (type === 'magnet') {
+    const u = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.16, 8, 16, Math.PI), mat);
+    u.rotation.z = Math.PI;
+    const tipMat = new THREE.MeshStandardMaterial({ color: '#f2f2f2', emissive: '#777777', emissiveIntensity: 0.4 });
+    for (const x of [-0.42, 0.42]) {
+      const tip = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.3, 10), tipMat);
+      tip.position.set(x, 0.12, 0);
+      g.add(tip);
+    }
+    g.add(u);
+  } else if (type === 'double') {
+    const cv = document.createElement('canvas');
+    cv.width = 128;
+    cv.height = 128;
+    const x = cv.getContext('2d');
+    x.fillStyle = c;
+    x.fillRect(0, 0, 128, 128);
+    x.fillStyle = '#1a1000';
+    x.font = 'bold 72px system-ui, Arial, sans-serif';
+    x.textAlign = 'center';
+    x.textBaseline = 'middle';
+    x.fillText('2x', 64, 68);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    g.add(new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.85, 0.85), new THREE.MeshBasicMaterial({ map: tex })));
+  } else {
+    const top = new THREE.Mesh(new THREE.ConeGeometry(0.42, 0.5, 12), mat);
+    top.position.y = 0.26;
+    top.rotation.x = Math.PI;
+    const bot = new THREE.Mesh(new THREE.ConeGeometry(0.42, 0.5, 12), mat);
+    bot.position.y = -0.26;
+    g.add(top, bot);
+  }
   return g;
 }
 
-const track = new Track(scene, pools, makeSign, makeShieldPickup);
+const track = new Track(scene, pools, makeSign, makePickup);
 const bg = new Background(scene, quality);
 const trail = new Trail(scene);
 const particles = new Particles(scene);
@@ -372,7 +413,9 @@ const renderPos = new THREE.Vector3();
 
 function resetWorld() {
   const hints = save.runs < 8;
-  track.reset((Math.random() * 2 ** 31) | 0, S.mode, hints && S.mode === 'plus');
+  // ?seed=123 replays the same track (handy for sharing a run or testing)
+  const urlSeed = parseInt(new URLSearchParams(location.search).get('seed'), 10);
+  track.reset(Number.isFinite(urlSeed) ? urlSeed : (Math.random() * 2 ** 31) | 0, S.mode, hints && S.mode === 'plus');
   track.update(0);
   ball.pos.set(0, BALL_R + 0.02, 0);
   // settle onto the runway surface
@@ -402,6 +445,7 @@ function resetWorld() {
   S.section = 0;
   S.lastPid = 0;
   S.sectionStart = 0;
+  S.powers = { magnet: 0, double: 0, slowmo: 0 };
   trail.reset();
   S.deadTimer = 0;
   S.slowmo = 1;
@@ -511,7 +555,20 @@ const _tmp = new THREE.Vector3();
 const _axis = new THREE.Vector3();
 const _dq = new THREE.Quaternion();
 const _col = new THREE.Color();
-const CYAN = new THREE.Color('#46e6ff');
+const GOLD = new THREE.Color('#ffc928');
+
+function givePower(type) {
+  const info = POWER_INFO[type];
+  if (type === 'shield') {
+    ball.shield = true;
+    audio.play('shield');
+  } else {
+    S.powers[type] = info.time;
+    audio.play(type === 'slowmo' ? 'shield' : 'buy');
+  }
+  toast(info.label);
+}
+const timeScale = () => (S.powers && S.powers.slowmo > 0 ? 0.6 : 1);
 
 function stepBall(h) {
   const b = ball;
@@ -526,7 +583,12 @@ function stepBall(h) {
   // score = platforms reached (like the original): +1 the first time the ball lands on a new one
   if (grounded && groundBox && groundBox.pid > S.lastPid) {
     S.lastPid = groundBox.pid;
-    S.score++;
+    S.score += S.powers.double > 0 ? 2 : 1;
+    if (groundBox.secret && !groundBox.found) {
+      groundBox.found = true;
+      banner('SECRET ROUTE!');
+      audio.play('level');
+    }
   }
   // speed tunnel pads
   for (const tr of track.triggers) {
@@ -599,21 +661,26 @@ function stepBall(h) {
       track.takeGem(g);
       S.gems++;
       audio.play('gem', S.gems);
-      particles.burst(g.pos, CYAN, 6, 4, { life: 0.35, size: 0.25, gravity: 0 });
+      particles.burst(g.pos, GOLD, 6, 4, { life: 0.35, size: 0.25, gravity: 0 });
     }
   }
   for (const p of track.pickups) {
     if (p.taken) continue;
-    if (p.pos.distanceToSquared(b.pos) < 2.4 * 2.4) {
+    if (p.pos.distanceToSquared(b.pos) < 2.6 * 2.6) {
       p.taken = true;
       p.mesh.visible = false;
-      if (p.type === 'shield') {
-        b.shield = true;
-        audio.play('shield');
-        toast('SHIELD UP');
-      }
+      givePower(p.type);
     }
   }
+  // coin magnet: pull nearby coins in
+  if (S.powers.magnet > 0) {
+    for (const g of track.gems) {
+      if (g.taken) continue;
+      const d2 = g.pos.distanceToSquared(b.pos);
+      if (d2 < 11 * 11) g.pos.lerp(b.pos, Math.min(1, 9 * h));
+    }
+  }
+  for (const k of ['magnet', 'double', 'slowmo']) if (S.powers[k] > 0) S.powers[k] = Math.max(0, S.powers[k] - h / timeScale());
 
   // progress
   const d = track.distAt(b.pos.z);
@@ -681,8 +748,8 @@ function updateCamera(dt) {
   const refAhead = track.refAt(p.z - 16);
   if (S.state !== 'dead' || S.cause === 'crash') {
     // low and close behind the ball, like the original
-    const back = 5.6 + speed * 0.02;
-    const up = 2.3 + speed * 0.008;
+    const back = 8.4 + speed * 0.025;
+    const up = 3.4 + speed * 0.012;
     // follow the ball, but blend towards the track line so jumps / falls don't yank the view
     const baseY = S.state === 'dead' ? camera.position.y - up : Math.max(p.y, ref.y + BALL_R - 1.5) * 0.75 + (ref.y + BALL_R) * 0.25;
     _desired.set(THREE.MathUtils.lerp(p.x, ref.x, 0.1), baseY + up, p.z + back);
@@ -692,7 +759,7 @@ function updateCamera(dt) {
     else camera.position.z = _desired.z;
     // look down the slope: aim at the track a little ahead so the descent stays in view
     const lookY = Math.min(p.y - 0.4, refAhead.y + BALL_R + 0.6);
-    camLook.set(THREE.MathUtils.lerp(p.x, refAhead.x, 0.3), damp(camLook.y, lookY, 10, dt), p.z - 16);
+    camLook.set(THREE.MathUtils.lerp(p.x, refAhead.x, 0.3), damp(camLook.y, lookY, 10, dt), p.z - 18);
   } else {
     // falling: stop following forward, keep watching the ball drop away
     camLook.lerp(p, 1 - Math.exp(-4 * dt));
@@ -816,6 +883,15 @@ function updateHud() {
       hudCache.dashCool = cool;
       $('tb-dash').classList.toggle('cooling', cool);
     }
+  }
+  const pw = POWERUPS.filter((k) => k !== 'shield' && S.powers[k] > 0)
+    .map((k) => `${k}:${Math.ceil(S.powers[k])}`)
+    .join(',');
+  if (hudCache.powers !== pw) {
+    hudCache.powers = pw;
+    $('hud-powers').innerHTML = POWERUPS.filter((k) => k !== 'shield' && S.powers[k] > 0)
+      .map((k) => `<span style="--c:${POWER_INFO[k].color}">${POWER_INFO[k].label} ${Math.ceil(S.powers[k])}</span>`)
+      .join('');
   }
   const sh = ball.shield;
   if (hudCache.shield !== sh) {
@@ -1059,7 +1135,8 @@ function frame(now) {
   }
 
   if (S.state === 'playing') {
-    S.acc += dt;
+    const ts = timeScale();
+    S.acc += dt * ts;
     let steps = 0;
     while (S.acc >= STEP && steps < 12) {
       ball.prev.copy(ball.pos);
@@ -1070,7 +1147,7 @@ function frame(now) {
     }
     if (steps >= 12) S.acc = 0;
     S.runTime += dt;
-    S.time += dt;
+    S.time += dt * ts;
     renderPos.lerpVectors(ball.prev, ball.pos, THREE.MathUtils.clamp(S.acc / STEP, 0, 1));
     audio.setMotion(ball.grounded, -ball.vel.z, true);
     updateHud();
@@ -1145,4 +1222,4 @@ renderer.domElement.addEventListener('webglcontextlost', (e) => {
 });
 
 // debug / testing hooks
-window.__slope = { S, ball, track, startRun, camera, pools, THREE };
+window.__slope = { S, ball, track, startRun, camera, pools, THREE, sectionSpeed };

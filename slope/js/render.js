@@ -143,7 +143,8 @@ void main() {
   float edge = 1.0 - smoothstep(uLine * 1.6, uLine * 1.6 + fe * 1.5, e);
   float top = step(0.9, face);
   float grid = gridLine(uv, uCell, uLine / uCell) * max(top, uAllFaces);
-  vec3 line = uColor * vTint;
+  // a negative tint means "use this exact colour" (secret routes stay gold in every section)
+  vec3 line = vTint.b < 0.0 ? -vTint : uColor * vTint;
   vec3 col = uFill;
   col = mix(col, line * 0.85, grid);
   col = mix(col, line, edge);

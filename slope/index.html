@@ -60,6 +60,7 @@
           <button id="btn-pause" class="icon-btn" aria-label="Pause"><i></i><i></i></button>
         </div>
       </div>
+      <div id="hud-powers"></div>
       <div id="hud-abilities">
         <div class="ab" id="ab-jump"><span class="lbl">JUMP</span><span class="bar"><i></i></span><kbd class="desk-only">SPACE</kbd></div>
         <div class="ab" id="ab-dash"><span class="lbl">DASH</span><span class="bar"><i></i></span><kbd class="desk-only">SHIFT</kbd></div>
@@ -87,7 +88,7 @@
         <div id="over-newbest" class="badge">NEW BEST!</div>
         <div class="grid2">
           <div><small>BEST</small><b id="over-best">0</b></div>
-          <div><small>GEMS</small><b id="over-gems">+0</b></div>
+          <div><small>COINS</small><b id="over-gems">+0</b></div>
           <div><small>DISTANCE</small><b id="over-dist">0 m</b></div>
           <div><small>TIME</small><b id="over-time">0s</b></div>
         </div>
@@ -119,7 +120,7 @@
         </section>
         <section data-panel="skins">
           <h2>BALL SKINS</h2>
-          <p class="muted">Collect <i class="gem-ico"></i> gems on the track to unlock skins. You have <b id="skins-gems">0</b>.</p>
+          <p class="muted">Collect <i class="gem-ico"></i> coins on the track to unlock skins. You have <b id="skins-gems">0</b>.</p>
           <div id="skin-grid"></div>
         </section>
         <section data-panel="help">
@@ -136,6 +137,7 @@
             </table>
             <p><b>Plus mode</b> adds gaps you must jump, hurdles, dash-gates you can only pass by phasing, and blue shields that save you from one hit.</p>
             <p><b>Classic mode</b> is the original: steering only, every section can be survived without jumping.</p>
+            <p><b>Secrets:</b> keep an eye out for small gold ramps near the edge of a rooftop. Hit one to launch onto a hidden gold route above the track, packed with coins and power-ups: shield, coin magnet, 2x points and slow-mo.</p>
             <p><b>Phones &amp; tablets:</b> hold the left or right half of the screen to steer. Swipe up to jump, swipe down to dash (or use the buttons). Gamepads work too.</p>
           </div>
         </section>

@@ -35,10 +35,13 @@ then open <http://localhost:8080/>.
 ## Slope+
 
 - **Steer** A/D or ←/→ · **Jump** Space/W/↑ · **Dash** Shift/S/↓ (phase through red for a moment; hold a direction to side-step; works mid-air) · **Pause** Esc/P · **Restart** R · **Mute** M
-- Touchscreens (hold left/right half of the screen + on-screen buttons) and gamepads are supported.
-- **Plus** mode adds jump gaps, hurdles, dash-gates and shield pick-ups. **Classic** mode is steering-only and every section is survivable without jumping.
-- Collect gems to unlock 10 ball skins. Best scores, gems and settings are saved in the browser (localStorage).
-- Graphics: *Auto* starts with glow on and drops to *Low* if the frame rate is poor. You can force a level in Settings or with `slope/?quality=low`.
+- Touchscreens: hold the left/right half of the screen to steer, swipe up to jump, swipe down to dash (or use the buttons). Gamepads work too.
+- Built like the original: sections of early (RNG blocks, slants, straights), middle (treblocks, tunnels, snakes, spinners) and late (hors, verts, sliding gates) obstacles, each ending in a speed-tunnel building that boosts you and launches you into the next section. It gets harder every section: faster, narrower, and more of the obstacles move.
+- Every platform is the rooftop of a building that goes all the way down; big gaps between buildings are crossed by rolling off onto a lower roof or by hitting a ramp.
+- **Score** = platforms you land on. **Secret routes**: small gold ramps at the edge of some rooftops launch you onto a hidden gold lane above the track, full of coins and power-ups (shield, coin magnet, 2x points, slow-mo).
+- **Plus** mode adds jump gaps, hurdles, dash-gates and sweeping blockers. **Classic** mode is steering-only and every section is survivable without jumping.
+- Coins unlock 10 ball skins. Best scores, coins and settings are saved in the browser (localStorage).
+- Graphics: *Auto* drops to *Low* if the frame rate is poor. Force a level in Settings or with `slope/?quality=low`. `slope/?seed=123` replays the same track.
 
 How it's built to be less buggy than the original:
 

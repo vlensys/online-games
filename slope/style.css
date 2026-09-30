@@ -255,11 +255,13 @@ body.touch .desk-only {
 }
 .gem-ico {
   display: inline-block;
-  width: 0.7em;
-  height: 0.7em;
-  background: #7fe6ff;
-  transform: rotate(45deg);
-  vertical-align: 0.02em;
+  width: 0.8em;
+  height: 0.8em;
+  border-radius: 50%;
+  background: #ffc928;
+  border: 2px solid #b37a00;
+  box-sizing: border-box;
+  vertical-align: -0.05em;
 }
 
 .panel {
@@ -529,6 +531,25 @@ body.touch .desk-only {
   display: none;
 }
 
+#hud-powers {
+  position: absolute;
+  top: calc(max(12px, env(safe-area-inset-top)) + 92px);
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+#hud-powers span {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 5px 10px;
+  border-radius: 7px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid var(--c);
+}
 #banner {
   position: fixed;
   top: 24%;
