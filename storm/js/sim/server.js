@@ -551,18 +551,7 @@ export class GameServer {
   playerTimers(p, dt) {
     const t = this.t;
     // shot budget refill for humans
-    if (p.reload && t >= p.reload.t1) {
-      const s = p.slots[p.reload.slot];
-      if (s && C.WEAPONS[s.t] && s === p.reload.item) {
-        const w = C.WEAPONS[s.t];
-        const need = w.mag - s.n;
-        const take = Math.min(need, p.ammo[w.ammo]);
-        s.n += take;
-        p.ammo[w.ammo] -= take;
-        p.invDirty = true;
-      }
-      p.reload = null;
-    }
+    if (p.reload && t >= p.reload.t1) this.finishReload(p);
     if (p.use && t >= p.use.t1) {
       const s = p.slots[p.use.slot];
       if (s && s.t === p.use.t && s.n > 0) {
@@ -587,6 +576,18 @@ export class GameServer {
       p.invDirty = false;
       this.sendInv(p);
     }
+  }
+
+  finishReload(p) {
+    const s = p.slots[p.reload.slot];
+    if (s && C.WEAPONS[s.t] && s === p.reload.item) {
+      const w = C.WEAPONS[s.t];
+      const take = Math.min(w.mag - s.n, p.ammo[w.ammo]);
+      s.n += take;
+      p.ammo[w.ammo] -= take;
+      p.invDirty = true;
+    }
+    p.reload = null;
   }
 
   sendInv(p) {
@@ -748,7 +749,7 @@ export class GameServer {
   }
 
   // Put an item into the inventory. Returns number taken (for stacks) or 0.
-  pickup(p, it) {
+  pickup(p, it, forceSwap = false) {
     if (!p.alive || !this.items.has(it.id)) return 0;
     const t = it.t;
     let taken = 0;
@@ -784,7 +785,7 @@ export class GameServer {
       }
       taken = it.n - left;
     } else if (C.isWeapon(t)) {
-      const e = p.slots.indexOf(null);
+      const e = forceSwap ? -1 : p.slots.indexOf(null);
       if (e >= 0) p.slots[e] = { t, r: it.r, n: it.n };
       else if (!this.swapHeld(p, it)) return 0;
       taken = it.n;
@@ -859,8 +860,9 @@ export class GameServer {
     avail[id] = false;
     this.broadcast({ t: 'co', k: kind, id });
     const items = kind === 'b' ? rollAmmoBox(this.rng) : rollChest(this.rng, this.cfg.loot);
-    const fx = -Math.sin(ch.yaw || 0);
-    const fz = -Math.cos(ch.yaw || 0);
+    // containers face local +z (see mapgen)
+    const fx = Math.sin(ch.yaw || 0);
+    const fz = Math.cos(ch.yaw || 0);
     items.forEach((it, i) => {
       const side = (i - (items.length - 1) / 2) * 0.75;
       const x = ch.x + fx * 1.3 + -fz * side;
@@ -986,6 +988,8 @@ export class GameServer {
   onShot(p, m) {
     if (!p.alive || p.c.mode !== M_GROUND) return;
     if (typeof m.w === 'number' && m.w >= 1 && m.w <= 5 && m.w !== p.cur) this.setSlot(p, m.w);
+    // the client finishes its reload one network trip earlier than we do
+    if (p.reload && p.reload.t1 - this.t < 0.35) this.finishReload(p);
     const s = this.fireCheck(p);
     if (!s) return;
     const w = C.weaponStats(s.t, s.r);
@@ -1256,6 +1260,7 @@ export class GameServer {
   // ---------------------------------------------------------------- rockets
   onRocket(p, m) {
     if (!p.alive) return;
+    if (p.reload && p.reload.t1 - this.t < 0.35) this.finishReload(p);
     const s = this.fireCheck(p);
     if (!s || s.t !== 'rocket') return;
     const w = C.weaponStats(s.t, s.r);

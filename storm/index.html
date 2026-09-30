@@ -66,7 +66,7 @@
         <div id="specName"></div>
         <div class="spec-hint" id="specHint">Click / Space for next player</div>
       </div>
-      <div id="busHint" class="hidden"><span class="key">SPACE</span> Jump from the bus</div>
+      <div id="busHint" class="hidden"><span class="key">SPACE</span> <span id="busText">Jump from the bus</span></div>
       <div id="fps" class="hidden"></div>
       <div id="netStatus" class="hidden"></div>
     </div>
@@ -147,6 +147,7 @@
                 <code id="hostAddr">starting&#8230;</code>
                 <button class="btn tiny" id="hostShow">SHOW</button>
                 <button class="btn tiny" id="hostCopy">COPY</button>
+                <button class="btn tiny hidden" id="hostRetry">RETRY</button>
               </div>
               <div class="addr-status" id="hostStatus">Opening server&#8230;</div>
             </div>
@@ -185,6 +186,7 @@
         <div class="form">
           <label>Server address <input id="joinAddr" placeholder="203.0.113.7:48213" autocomplete="off" spellcheck="false" /></label>
           <label>Password <input id="joinPw" type="password" autocomplete="off" /></label>
+          <label>Your name <input id="joinName" maxlength="16" autocomplete="off" spellcheck="false" /></label>
         </div>
         <details class="adv">
           <summary>Advanced connection settings</summary>

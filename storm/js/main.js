@@ -195,10 +195,14 @@ function playerName() {
 function setupMenus() {
   const S = app.settings;
   $('playerName').value = S.name || '';
-  $('playerName').addEventListener('change', () => {
-    S.name = $('playerName').value.trim().slice(0, 16);
-    saveSettings(S);
-  });
+  $('joinName').value = S.name || '';
+  for (const id of ['playerName', 'joinName']) {
+    $(id).addEventListener('input', () => {
+      S.name = $(id).value.trim().slice(0, 16);
+      $(id === 'playerName' ? 'joinName' : 'playerName').value = $(id).value;
+      saveSettings(S);
+    });
+  }
   for (const b of document.querySelectorAll('[data-go]')) {
     b.addEventListener('click', () => {
       app.sfx.ui();
@@ -271,6 +275,9 @@ function setupMenus() {
     const done = () => toast('Address copied');
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(a).then(done, () => fallbackCopy(a));
     else fallbackCopy(a);
+  });
+  $('hostRetry').addEventListener('click', () => {
+    if (app.session && app.session.kind === 'host') startHostNet(app.session);
   });
   $('hostStart').addEventListener('click', () => {
     if (app.session && app.session.kind === 'host') app.session.link.send({ t: 'hc', a: 'start' }), app.session.link.flush();
@@ -396,7 +403,10 @@ function fallbackCopy(text) {
 function showPause(on) {
   if (!app.game && on) return;
   $('pause').classList.toggle('hidden', !on);
-  if (on) $('pauseSub').textContent = app.session && app.session.kind === 'solo' ? 'The match keeps running.' : 'Online match - the game keeps running.';
+  if (on) {
+    const k = app.session && app.session.kind;
+    $('pauseSub').textContent = k === 'solo' ? 'The match keeps running.' : k === 'host' ? 'You are hosting: leaving ends the match for everyone.' : 'Online match - the game keeps running.';
+  }
 }
 
 function resume() {
@@ -477,6 +487,7 @@ function startGame(session, m) {
         isTouch: () => app.touchMode,
         onResults: (r) => showResults(r),
         onPause: () => {
+          if (!$('pause').classList.contains('hidden')) return resume();
           if (!app.touchMode) app.input.unlock();
           showPause(true);
         },
@@ -505,7 +516,8 @@ function showResults(r) {
   const s = app.session;
   $('resPlace').textContent = '#' + r.place;
   $('resTitle').textContent = r.win ? 'STORM CHAMPION' : r.final ? 'MATCH OVER' : 'ELIMINATED';
-  $('resSub').textContent = r.sub + (r.final && r.winner && !r.win ? ' - ' + r.winner + ' won the match' : '');
+  $('resSub').textContent =
+    r.sub + (r.final && r.winner && !r.win ? ' - ' + r.winner + ' won the match' : '') + (s.kind === 'host' && !r.final ? '. You are hosting - stay (spectate) so the match keeps running.' : '');
   $('resKills').textContent = r.kills;
   $('resDmg').textContent = Math.round(r.dmg);
   $('resTime').textContent = fmtTime(r.time);
@@ -652,11 +664,19 @@ function openHost() {
   link.onMessages = (msgs) => sessionMsgs(session, msgs);
   link.send({ t: 'hello', v: VERSION, name: playerName() });
   link.flush();
+  renderLobby(session, { ps: [], cfg: {} });
+  startHostNet(session);
+}
+
+function startHostNet(session) {
+  if (session.net) session.net.close();
+  session.address = '';
+  session.addrError = false;
+  $('hostRetry').classList.add('hidden');
   $('hostStatus').textContent = 'Opening server…';
   $('hostStatus').className = 'addr-status';
   renderHostAddr();
-  renderLobby(session, { ps: [], cfg: {} });
-  session.net = new HostNet(runner, app.settings.adv, {
+  session.net = new HostNet(session.runner, app.settings.adv, {
     onAddress: (addr, info) => {
       if (app.session !== session) return;
       session.address = addr;
@@ -669,6 +689,7 @@ function openHost() {
       renderHostAddr();
       $('hostStatus').textContent = msg;
       $('hostStatus').className = 'addr-status err';
+      $('hostRetry').classList.remove('hidden');
     },
   });
 }

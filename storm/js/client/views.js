@@ -536,7 +536,7 @@ export class CharsView {
       } else if (glide) {
         rx = Math.sin(s.walk * 0.5 + side) * 0.15;
       } else if (crouch) {
-        rx = -0.9 + sw * side * 0.4;
+        rx = 0.9 + sw * side * 0.4;
       } else if (!s.grounded && !swim) {
         rx = side > 0 ? -0.5 : 0.25;
       } else rx = sw * side;
@@ -557,31 +557,35 @@ export class CharsView {
       let rx = 0;
       let rz = side * 0.08;
       let ry = 0;
+      // arms hang along -y; positive rx swings them forward (the body faces -z)
       if (fall) {
-        rx = -0.4;
+        rx = 0.3;
         rz = side * 1.15;
       } else if (glide) {
-        rx = -2.75;
+        rx = 2.75;
         rz = side * 0.35;
       } else if (swim) {
-        rx = -1.6 + Math.sin(s.walk * 1.4 + (side > 0 ? 0 : Math.PI)) * 0.9;
+        rx = 1.6 + Math.sin(s.walk * 1.4 + (side > 0 ? 0 : Math.PI)) * 0.9;
       } else if (gun) {
         const p = Math.max(-1.1, Math.min(1.1, s.pitch));
-        rx = -Math.PI / 2 - p;
+        rx = Math.PI / 2 + p;
         if (side < 0) {
           rz = 0.55;
           ry = 0;
-          rx = -Math.PI / 2 - p + 0.05;
+          rx = Math.PI / 2 + p - 0.05;
         } else rz = -0.05;
       } else if (cons) {
-        rx = side > 0 ? -0.9 : sw * 0.6;
+        rx = side > 0 ? 0.9 : sw * 0.6;
       } else if (s.building) {
-        rx = -1.1 - s.pitch * 0.5;
+        rx = 1.1 + s.pitch * 0.5;
         rz = side * -0.25;
       } else if (item === null || (item && item.t === 'pickaxe') || !item) {
-        if (side > 0) rx = -0.35 - swingP * 2.1 + (s.swing > 0 ? 0 : -sw * 0.8);
-        else rx = -sw * 0.8;
+        // pickaxe: raise overhead then chop down
+        const chop = s.swing > 0 ? (s.swing < 0.45 ? (s.swing / 0.45) * 2.6 : 2.6 - ((s.swing - 0.45) / 0.55) * 2.2) : 0;
+        if (side > 0) rx = s.swing > 0 ? 0.4 + chop : 0.35 + sw * 0.8;
+        else rx = sw * 0.8;
       }
+      void swingP;
       _m.makeTranslation(side * 0.37, 1.47, 0);
       _e.set(rx, ry, rz, 'XYZ');
       _m2.makeRotationFromEuler(_e);
@@ -616,7 +620,7 @@ export class CharsView {
       // pickaxe in the right hand
       _m2.makeTranslation(0, -0.66, 0);
       _m.multiplyMatrices(this._rightArm, _m2);
-      _m2.makeRotationX(-0.3);
+      _m2.makeRotationX(0.5);
       _m.multiply(_m2);
       this.put('w_pickaxe', this.wpools.pickaxe.body, _m, null);
       this.nAcc('pickaxe', _m, this.pickColor);
@@ -774,7 +778,7 @@ export class ChestsView {
     this.map.chests.forEach((c, i) => {
       if (!this.availC[i] && !this.openC.has(i)) return;
       const opened = this.openC.has(i);
-      _q.setFromAxisAngle(_v.set(0, 1, 0), c.yaw || 0);
+      _q.setFromAxisAngle(_v.set(0, 1, 0), (c.yaw || 0) + Math.PI);
       _m.compose(_v.set(c.x, c.y, c.z), _q, _s.set(1, 1, 1));
       _m2.makeTranslation(0, 0.56, 0.31);
       _m3.makeRotationX(opened ? -1.9 : 0);
@@ -798,7 +802,7 @@ export class ChestsView {
     this.map.boxes.forEach((b, i) => {
       if (!this.availB[i] && !this.openB.has(i)) return;
       const opened = this.openB.has(i);
-      _q.setFromAxisAngle(_v.set(0, 1, 0), b.yaw || 0);
+      _q.setFromAxisAngle(_v.set(0, 1, 0), (b.yaw || 0) + Math.PI);
       _m.compose(_v.set(b.x, b.y, b.z), _q, _s.set(1, 1, 1));
       _m2.makeTranslation(0, 0.38, 0.26);
       _m3.makeRotationX(opened ? -1.7 : 0);
@@ -899,10 +903,17 @@ export class FxView {
         continue;
       }
       const l = head - tail;
+      // don't draw streaks passing right next to the camera (they fill the screen)
+      if (cam) {
+        const hx = tr.ox + tr.dx * head - cam.position.x;
+        const hy = tr.oy + tr.dy * head - cam.position.y;
+        const hz = tr.oz + tr.dz * head - cam.position.z;
+        if (hx * hx + hy * hy + hz * hz < 9) continue;
+      }
       _v.set(tr.ox + tr.dx * tail, tr.oy + tr.dy * tail, tr.oz + tr.dz * tail);
       _m.lookAt(_v, _s.set(_v.x + tr.dx, _v.y + tr.dy, _v.z + tr.dz), THREE.Object3D.DEFAULT_UP);
       _m.setPosition(_v);
-      _m2.makeScale(0.022, 0.022, l);
+      _m2.makeScale(0.018, 0.018, l);
       _m.multiply(_m2);
       // lookAt makes -z point at target in camera convention; our geometry extends to -z
       this.tracers.ensure(n + 1);
@@ -995,8 +1006,8 @@ export class StormView {
         void main(){
           float band = 0.5 + 0.5 * sin(vUv.x * 240.0 + vY * 14.0 - time * 1.6);
           float band2 = 0.5 + 0.5 * sin(vUv.x * 90.0 - vY * 6.0 + time * 0.9);
-          float a = 0.34 + 0.12 * band + 0.08 * band2;
-          a *= smoothstep(1.0, 0.55, vY);
+          float a = 0.2 + 0.1 * band + 0.06 * band2;
+          a *= 1.0 - smoothstep(0.22, 0.62, vY);
           gl_FragColor = vec4(col * (0.85 + 0.25 * band), a);
         }`,
     });

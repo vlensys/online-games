@@ -400,15 +400,16 @@ export class Game {
     // re-apply our own not-yet-confirmed builds
     for (const tp of me.temps.values()) if (tp.q > m.q) inv.mats[tp.m] = Math.max(0, inv.mats[tp.m] - C.BUILD_COST);
     void oldMats;
-    // a local reload that already finished but the server hasn't confirmed yet
-    if (me.reloadDone && me.reloadDone.q > m.q) {
-      const s = inv.slots[me.reloadDone.slot - 1];
-      if (s && s === inv.slots[me.cur - 1] && C.WEAPONS[s.t]) {
+    // a local reload that already finished but the server hasn't finished yet (it started later)
+    const rd = me.reloadDone;
+    if (rd && this.now() - rd.t < 1.2 * Math.max(1, this.ts) && rd.slot === me.cur) {
+      const s = inv.slots[rd.slot - 1];
+      if (s && C.WEAPONS[s.t] && s.t === rd.type && s.n < rd.n) {
         const w = C.WEAPONS[s.t];
-        const take = Math.min(w.mag - s.n, inv.ammo[w.ammo]);
+        const take = Math.min(rd.n - s.n, inv.ammo[w.ammo]);
         s.n += take;
         inv.ammo[w.ammo] -= take;
-      }
+      } else me.reloadDone = null;
     } else me.reloadDone = null;
   }
 
@@ -828,7 +829,7 @@ export class Game {
         const take = Math.min(w.mag - s.n, me.inv.ammo[w.ammo]);
         s.n += take;
         me.inv.ammo[w.ammo] -= take;
-        me.reloadDone = { q: me.reload.q, slot: me.reload.slot };
+        me.reloadDone = { t: this.now(), slot: me.reload.slot, type: s.t, n: s.n };
       }
       me.reload = null;
     }
@@ -928,7 +929,7 @@ export class Game {
       });
     }
     const c = me.c;
-    const scoped = this.scoped;
+    const scoped = this.scoped || (this.camNear !== undefined && this.camNear < 1.0);
     if (me.alive && c.mode !== M_BUS && !scoped) {
       if (me.swingT > 0) {
         me.swingP = (this.now() - me.swingT) * 3.2 * this.ts;
@@ -1070,16 +1071,33 @@ export class Game {
       cam.position.set(c.x, eyeY(c), c.z);
     } else {
       const want = _v2.set(tx - fx * dist + rx * right, ty - fy * dist + up, tz - fz * dist + rz * right);
+      this.camNear = 99;
       if (collide) {
-        const dx = want.x - pivot.x;
-        const dy = want.y - pivot.y;
-        const dz = want.z - pivot.z;
-        const L = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        const hit = this.world.raycast(pivot.x, pivot.y, pivot.z, dx / L, dy / L, dz / L, L + 0.3, 7);
-        if (hit.kind && hit.t < L + 0.3) {
-          const t = Math.max(0.25, hit.t - 0.3);
-          want.set(pivot.x + (dx / L) * t, pivot.y + (dy / L) * t, pivot.z + (dz / L) * t);
+        // try the normal spot, then raised spots (steep slopes right behind the player)
+        let bestT = -1;
+        let bx = 0;
+        let by = 0;
+        let bz = 0;
+        const wx = want.x;
+        const wy = want.y;
+        const wz = want.z;
+        for (let k = 0; k < 3; k++) {
+          const dx = wx - pivot.x;
+          const dy = wy + k * 1.3 - pivot.y;
+          const dz = wz - pivot.z;
+          const L = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          const hit = this.world.raycast(pivot.x, pivot.y, pivot.z, dx / L, dy / L, dz / L, L + 0.3, 7);
+          const t = hit.kind && hit.t < L + 0.3 ? Math.max(0.25, hit.t - 0.3) : L;
+          if (t > bestT + 0.4) {
+            bestT = t;
+            bx = dx / L;
+            by = dy / L;
+            bz = dz / L;
+          }
+          if (t >= L - 0.01 || hit.kind !== HIT_TERRAIN) break;
         }
+        want.set(pivot.x + bx * bestT, pivot.y + by * bestT, pivot.z + bz * bestT);
+        this.camNear = bestT;
         const wh = this.world.terrain.heightAt(want.x, want.z);
         if (want.y < wh + 0.3) want.y = wh + 0.3;
         if (want.y < 0.35 && wh < 0) want.y = Math.max(want.y, 0.35);
@@ -1305,7 +1323,7 @@ export class Game {
       me.pending.push({ q, slot: me.cur });
       this.sfx.shot(held.t);
       me.recoil += 0.06;
-      if (held.n <= 0) setTimeout(() => this.startReload(), 250);
+      if (held.n <= 0) setTimeout(() => !this.destroyed && this.startReload(), 250);
       return;
     }
     const moving = Math.hypot(c.vx, c.vz) > 1.2;
@@ -1336,7 +1354,7 @@ export class Game {
     this.V.fx.flash(mx, my, mz);
     this.sfx.shot(held.t);
     me.recoil += Math.min(0.05, (held.t === 'sniper' ? 0.07 : held.t === 'shotgun' ? 0.06 : 0.012) + w.bloom * 0.004);
-    if (held.n <= 0 && me.inv.ammo[C.WEAPONS[held.t].ammo] > 0) setTimeout(() => this.startReload(), 180);
+    if (held.n <= 0 && me.inv.ammo[C.WEAPONS[held.t].ammo] > 0) setTimeout(() => !this.destroyed && this.startReload(), 180);
   }
 
   swingPickaxe(now) {
@@ -1554,7 +1572,9 @@ export class Game {
       else hud.pieceHp(null);
     } else hud.pieceHp(null);
     // bus hint / spectate
-    hud.toggle('busHint', me.alive && me.c.mode === M_BUS && this.state === 'bus' && this.T >= this.bus.door);
+    const busOn = me.alive && me.c.mode === M_BUS && this.state === 'bus' && this.T >= this.bus.door;
+    hud.toggle('busHint', busOn);
+    if (busOn) hud.text('busText', (touch ? 'Tap DROP' : 'Jump') + ' \u00b7 auto drop in ' + Math.max(0, Math.ceil(this.bus.dur - this.T)) + 's');
     if (!me.alive && this.state !== 'end' && spec) hud.spectate(spec.name, touch ? 'Tap FIRE for next player' : 'Click / Space for next player');
     else if (this.state === 'end' && spec) hud.spectate(spec.name, 'Winner');
     else hud.spectate(null);
@@ -1565,7 +1585,9 @@ export class Game {
       document.getElementById('tAim').classList.toggle('on', !!this.touchAds);
       document.getElementById('tCrouch').classList.toggle('on', me.crouch);
       document.getElementById('tPieces').classList.toggle('hidden', !me.build);
-      document.getElementById('tFire').textContent = me.build ? 'PLACE' : me.alive && me.c.mode === M_BUS ? 'JUMP' : 'FIRE';
+      const onBus = me.alive && me.c.mode === M_BUS;
+      document.getElementById('tFire').textContent = me.build ? 'PLACE' : onBus ? 'DROP' : 'FIRE';
+      document.getElementById('tJump').classList.toggle('hidden', onBus);
       if (me.build) for (const b of document.querySelectorAll('#tPieces .tbtn')) b.classList.toggle('on', b.dataset.a === 'p' + me.piece);
     }
   }

@@ -8,7 +8,7 @@ Pure static files — no build step, no server, no external CDNs (everything is 
 | Game | Folder | Status |
 | --- | --- | --- |
 | **Slope+** — endless neon slope with jump, dash, shields, skins | [`slope/`](slope/) | ✅ Playable |
-| **Storm Royale** — 3D battle royale with building, bots and private online matches | [`storm/`](storm/) | ✅ Solo vs bots playable · online private games in progress |
+| **Storm Royale** — 3D battle royale with building, bots and private online matches | [`storm/`](storm/) | ✅ Playable — solo vs bots and private online matches |
 | Game 3 | — | 🚧 Planned |
 
 ## Hosting on GitHub Pages (one-time setup)

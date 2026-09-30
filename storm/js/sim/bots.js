@@ -185,11 +185,17 @@ export class BotBrain {
     const L = Math.sqrt(bdx * bdx + bdz * bdz);
     const ux = bdx / L;
     const uz = bdz / L;
-    for (let k = 0; k < 20; k++) {
+    const claims = sv.dropClaims || (sv.dropClaims = new Map());
+    const nb = sv.plist.length;
+    const cap = Math.max(2, Math.ceil((nb * 0.62) / Math.max(1, map.pois.length)));
+    for (let k = 0; k < 24; k++) {
       let x;
       let z;
-      if (rng.chance(0.75) && map.pois.length) {
+      let poiName = null;
+      if (rng.chance(0.62) && map.pois.length) {
         const poi = rng.pick(map.pois);
+        if ((claims.get(poi.name) || 0) >= cap && k < 18) continue;
+        poiName = poi.name;
         const a = rng.float(0, Math.PI * 2);
         const r = rng.float(0, poi.r * 0.8);
         x = poi.x + Math.cos(a) * r;
@@ -205,6 +211,13 @@ export class BotBrain {
       const perp = Math.abs(rx * uz - rz * ux);
       if (perp > 230 || along < 30 || along > L - 10) continue;
       if (map.terrain.heightAt(x, z) < 0.8) continue;
+      // keep lone drops away from other bots' spots
+      if (!poiName && k < 18) {
+        let near = false;
+        for (const o of sv.plist) if (o.bot && o.bot !== this && o.bot.dropT && (o.bot.dropX - x) ** 2 + (o.bot.dropZ - z) ** 2 < 55 * 55) near = true;
+        if (near) continue;
+      }
+      if (poiName) claims.set(poiName, (claims.get(poiName) || 0) + 1);
       this.dropX = x;
       this.dropZ = z;
       this.dropT = Math.max(bus.door + rng.float(0, 2.5), along / C.BUS_SPEED - perp / 130 - rng.float(0, 2));
@@ -352,6 +365,16 @@ export class BotBrain {
   botPickup(it) {
     const sv = this.sv;
     const p = this.p;
+    if (C.isWeapon(it.t)) {
+      // upgrade of a weapon we already carry: replace it
+      const same = p.slots.findIndex((s) => s && s.t === it.t && s.r < it.r);
+      if (same >= 0) {
+        sv.setSlot(p, same + 1);
+        sv.pickup(p, it, true);
+        this.equipBest(40);
+        return;
+      }
+    }
     if (C.isWeapon(it.t) && p.slots.indexOf(null) < 0) {
       const w = this.worstWeaponSlot();
       if (w < 0) return;
@@ -500,7 +523,8 @@ export class BotBrain {
         this.target = best;
         this.targetFirstT = t;
         const surprised = best === this.attacker ? 0.6 : 1;
-        this.reactT = t + d.react * this.rng.float(0.7, 1.3) * surprised;
+        const early = p.landedT < 0 || t - p.landedT < 60 ? 1.6 : 1;
+        this.reactT = t + d.react * this.rng.float(0.7, 1.3) * surprised * early;
       }
       this.targetSeenT = t;
       this.lastKnown.x = best.c.x;
@@ -618,11 +642,20 @@ export class BotBrain {
       this.breakObj = null;
     } else this.breakObj = null;
 
-    const seen = this.target && t - this.targetSeenT < 3.5;
+    let seen = this.target && t - this.targetSeenT < 3.5;
+    if (seen) {
+      // right after landing bots prefer looting over picking fights far away
+      const o = this.target;
+      const d0 = Math.sqrt((o.c.x - c.x) ** 2 + (o.c.z - c.z) ** 2);
+      const early = p.landedT >= 0 && t - p.landedT < 55 + 35 * (1 - this.pers.aggro);
+      const provoked = o === this.attacker && t - this.lastDamageT < 6;
+      if (early && !provoked && d0 > 11 + 8 * this.pers.aggro) seen = false;
+    }
     if (seen) {
       const o = this.target;
       const dist = Math.sqrt((o.c.x - c.x) ** 2 + (o.c.z - c.z) ** 2);
-      if (armed || dist < 8) {
+      const cornered = dist < 4.5 || (o === this.attacker && t - this.lastDamageT < 2 && dist < 9);
+      if (armed || cornered) {
         if (!(outNow && tot < 45 && dist > 25)) {
           this.state = 'fight';
           this.thinkFight(t);

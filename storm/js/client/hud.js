@@ -21,7 +21,7 @@ export class Hud {
       'stormTint', 'scope', 'dmgDirs', 'nums', 'minimap', 'stormTimer', 'aliveCount', 'killCount', 'stormMsg', 'killfeed', 'alerts', 'bigMsg',
       'crosshair', 'hitmarker', 'prompt', 'promptKey', 'promptText', 'progress', 'progressLabel', 'progressFill', 'pieceHp', 'pieceHpFill',
       'pieceHpText', 'shieldFill', 'shieldText', 'healthFill', 'healthText', 'mat0', 'mat1', 'mat2', 'ammoReserve', 'hotbar', 'buildbar',
-      'spectate', 'specName', 'specHint', 'busHint', 'fps', 'netStatus', 'resources',
+      'spectate', 'specName', 'specHint', 'busHint', 'busText', 'fps', 'netStatus', 'resources',
     ])
       this.el[id] = $(id);
     this.cache = {};

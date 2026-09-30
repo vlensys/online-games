@@ -205,7 +205,15 @@ class PeerTransport {
         if (!opened) {
           clearTimeout(t);
           peer.destroy();
-          reject({ type: e.type, message: e.message });
+          const net = ['network', 'server-error', 'socket-error', 'socket-closed', 'ssl-unavailable'].includes(e.type);
+          reject({
+            type: e.type,
+            message: net
+              ? 'Could not reach the connection server. This network may block it - press RETRY, try another network, or set a signaling server under Advanced.'
+              : e.type === 'browser-incompatible'
+                ? 'This browser does not support peer-to-peer connections.'
+                : 'Could not open the server (' + (e.type || e.message) + ').',
+          });
         } else console.warn('[host peer]', e.type, e.message);
       });
       peer.on('disconnected', () => {
