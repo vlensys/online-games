@@ -1,5 +1,7 @@
 # Online Games Arcade
 
+**Play:** https://vlensys.github.io/online-games/
+
 Free 3D browser games (WebGL, [three.js](https://threejs.org)) that run on school laptops / Chromebooks in Chrome or Firefox.
 Pure static files — no build step, no server, no external CDNs (everything is vendored in `lib/`), so it works on GitHub Pages as-is.
 
