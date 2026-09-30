@@ -260,12 +260,14 @@ export class Track {
     this.pickups.push({ mesh: m, pos: m.position, type, taken: false });
   }
 
-  // decorative wireframe building block (no collision)
+  // wireframe building block — solid, so the ball bounces off / lands on buildings like you'd expect
   tower(cx, cz, w, d, top, bottom) {
     const h = top - bottom;
+    if (h <= 0.05) return;
     const pos = new THREE.Vector3(cx, bottom + h / 2, cz);
-    const slot = this.pools.towers.add(pos, _q.identity(), _scale.set(w, h, d));
-    this.towers.push({ box: { pos, min: new THREE.Vector3(0, 0, cz - d / 2), max: new THREE.Vector3(0, 0, cz + d / 2), half: new THREE.Vector3(w / 2, h / 2, d / 2), quat: new THREE.Quaternion() }, slot, pool: 'towers', start: pos });
+    const box = makeBox(pos, _q.identity(), new THREE.Vector3(w / 2, h / 2, d / 2), { bounce: 0.25 });
+    const slot = this.pools.towers.add(pos, _q, _scale.set(w, h, d));
+    this.towers.push({ box, slot, pool: 'towers', start: box.pos });
   }
 
   // The building under a rooftop, reaching all the way down. Sloped roofs get stepped columns.
@@ -452,7 +454,8 @@ export class Track {
     const v = this.v;
     const edge = this.tile(this.rf(10, 16));
     const th = this.pitch * DEG;
-    const H = this.rf(9, 16) + this.k * 1.5;
+    // deep enough to feel like a real gap between buildings, shallow enough to keep the roof in view
+    const H = this.rf(8, 13) + Math.min(this.k, 5) * 0.8;
     // wide enough to look scary, short enough that a slow ball still makes it
     const G = 0.62 * dropReach(v * 0.8, th, H);
     if (this.rng() < 0.5) {
@@ -476,7 +479,7 @@ export class Track {
     const ang = this.rf(13, 18);
     this.tile(3, { pitch: 0, join: true });
     const ramp = this.tile(5, { pitch: -ang, join: true });
-    return this.launch(ramp, ang, v, this.rf(7, 14) + this.k);
+    return this.launch(ramp, ang, v, this.rf(6, 11) + Math.min(this.k, 5) * 0.6);
   }
 
   // Gap + landing rooftop after a ramp. Sized from the real flight so it's always makeable.
@@ -509,7 +512,8 @@ export class Track {
   // ------------------------------------------------------------------ secret sky routes
   p_secret(name) {
     const v = this.v;
-    const conn = this.tile(28);
+    // a wider rooftop so the side kicker sits well clear of the normal line down the middle
+    const conn = this.tile(28, { w: this.W + 3 });
     const side = this.rng() < 0.5 ? -1 : 1;
     const P = this.cur.clone();
     const tiles0 = this.tiles.length,
@@ -544,10 +548,10 @@ export class Track {
     // the ball isn't stopped dead by one sharp crease)
     const kick = 30 * DEG,
       kLen = 5,
-      kW = 3.6,
+      kW = 3.4,
       lipLen = 3,
       lipAng = 4 * DEG;
-    const lx = side * (conn.w / 2 - kW / 2 - 0.5);
+    const lx = side * (conn.w / 2 - kW / 2 - 0.3);
     const lipStart = conn.start.clone().addScaledVector(conn.dir, conn.len - kLen - lipLen - 3).addScaledVector(conn.right, lx);
     const lq = new THREE.Quaternion().setFromEuler(new THREE.Euler(lipAng, 0, 0, 'YXZ'));
     const lDir = new THREE.Vector3(0, 0, -1).applyQuaternion(lq);
@@ -629,7 +633,7 @@ export class Track {
 
     // under the rest of the lane and where you drop off it: one long rooftop parallel to the lane
     const fall = dropReach(v * 1.15, lanePitch * DEG, laneH + 1, this.plus ? JUMP_V : 0);
-    this.forcePlain = { len: Math.max(34, (Q.z - laneEnd) / Math.cos(lanePitch * DEG) + fall * 1.3 + 12), pitch: lanePitch, w: this.W + 3.5 };
+    this.forcePlain = { len: Math.max(40, (Q.z - laneEnd) / Math.cos(lanePitch * DEG) + fall * 2 + 30), pitch: lanePitch, w: this.W + 6 };
   }
 
   // ------------------------------------------------------------------ original obstacles (harder)

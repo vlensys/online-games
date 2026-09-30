@@ -30,7 +30,7 @@ export function createBall() {
 }
 
 // ctl: { steer, target, plus, jumpQueued (seconds of buffer left), dashQueued }
-export function stepController(b, h, ctl, tiles) {
+export function stepController(b, h, ctl, tiles, extra = null) {
   b.dashCD = Math.max(0, b.dashCD - h);
   b.phase = Math.max(0, b.phase - h);
   b.dashTime = Math.max(0, b.dashTime - h);
@@ -94,7 +94,7 @@ export function stepController(b, h, ctl, tiles) {
   b.vel.y -= GRAVITY * h;
   if (b.vel.y < -48) b.vel.y = -48; // terminal velocity
 
-  const res = integrateBall(b, h, tiles);
+  const res = integrateBall(b, h, tiles, 1, extra);
   res.wasGrounded = b.grounded;
   b.grounded = res.grounded;
   b.airTime = res.grounded ? 0 : b.airTime + h;

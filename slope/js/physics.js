@@ -143,19 +143,37 @@ export function topHeightBelow(b, p, out) {
 }
 
 // Moves the ball by one fixed step with sub-steps and resolves contacts against track boxes.
+// `extra` is a second collider list (buildings). A cheap sweep-box filter picks candidates once per step.
 const _hit = { n: new THREE.Vector3(), pen: 0 };
-export function integrateBall(b, h, tiles, R = 1) {
+const _cand = [];
+function gather(list, lo, hi) {
+  if (!list) return;
+  for (let k = 0; k < list.length; k++) {
+    const b = list[k].box;
+    if (b.max.x < lo.x || b.min.x > hi.x || b.max.y < lo.y || b.min.y > hi.y || b.max.z < lo.z || b.min.z > hi.z) continue;
+    _cand.push(b);
+  }
+}
+const _lo = new THREE.Vector3(),
+  _hi = new THREE.Vector3();
+export function integrateBall(b, h, tiles, R = 1, extra = null) {
   const sp = b.vel.length();
   const n = Math.min(14, Math.max(1, Math.ceil((sp * h) / (R * 0.3))));
   const sh = h / n;
+  const reach = sp * h + R + 0.5;
+  _lo.set(b.pos.x - reach, b.pos.y - reach, b.pos.z - reach);
+  _hi.set(b.pos.x + reach, b.pos.y + reach, b.pos.z + reach);
+  _cand.length = 0;
+  gather(tiles, _lo, _hi);
+  gather(extra, _lo, _hi);
   let grounded = false;
   let groundBox = null;
   let impact = 0;
   let wall = 0;
   for (let i = 0; i < n; i++) {
     b.pos.addScaledVector(b.vel, sh);
-    for (let k = 0; k < tiles.length; k++) {
-      const box = tiles[k].box;
+    for (let k = 0; k < _cand.length; k++) {
+      const box = _cand[k];
       if (!boundsOverlapSphere(box, b.pos, R)) continue;
       if (!sphereBox(b.pos, R, box, _hit)) continue;
       b.pos.addScaledVector(_hit.n, _hit.pen);
@@ -168,10 +186,36 @@ export function integrateBall(b, h, tiles, R = 1) {
       }
       if (_hit.n.y > 0.55) {
         grounded = true;
-        groundBox = box;
+        if (!groundBox || box.pid) groundBox = box;
         b.groundN.copy(_hit.n);
       }
     }
   }
   return { grounded, groundBox, impact, wall };
+}
+
+// Distance along a ray (unit dir) to an oriented box, or Infinity. Used to keep the camera out of buildings.
+const _ro = new THREE.Vector3(),
+  _rd = new THREE.Vector3();
+export function rayBox(o, d, b, maxT) {
+  _ro.copy(o).sub(b.pos).applyQuaternion(b.invQuat);
+  _rd.copy(d).applyQuaternion(b.invQuat);
+  let t0 = 0,
+    t1 = maxT;
+  for (const ax of ['x', 'y', 'z']) {
+    const h = b.half[ax];
+    const od = _ro[ax],
+      dd = _rd[ax];
+    if (Math.abs(dd) < 1e-9) {
+      if (od < -h || od > h) return Infinity;
+      continue;
+    }
+    let ta = (-h - od) / dd,
+      tb = (h - od) / dd;
+    if (ta > tb) [ta, tb] = [tb, ta];
+    if (ta > t0) t0 = ta;
+    if (tb < t1) t1 = tb;
+    if (t0 > t1) return Infinity;
+  }
+  return t0;
 }

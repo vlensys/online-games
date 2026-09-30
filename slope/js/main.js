@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 import { Track, sectionSpeed, GRAVITY, BALL_R, POWERUPS } from './track.js';
-import { sphereTouchesBox, boundsOverlapSphere, topHeightBelow } from './physics.js';
+import { sphereTouchesBox, boundsOverlapSphere, topHeightBelow, rayBox } from './physics.js';
 import { createBall, stepController, COYOTE, JUMP_BUFFER, DASH_CD, PHASE_TIME } from './ball.js';
 import { InstancedPool, createTileMaterial, createHazardMaterial, createTowerMaterial, createPadMaterial, Background, Trail, Particles, Shards, LandingMarker, makeSign } from './render.js';
 import { GameAudio } from './audio.js';
@@ -568,7 +568,7 @@ function givePower(type) {
   }
   toast(info.label);
 }
-const timeScale = () => (S.powers && S.powers.slowmo > 0 ? 0.6 : 1);
+const timeScale = () => (S.powers && S.powers.slowmo > 0 ? 0.6 : 1) * (window.__timeScale || 1);
 
 function stepBall(h) {
   const b = ball;
@@ -579,7 +579,7 @@ function stepBall(h) {
   ctl.plus = plus;
   ctl.jumpQueued = input.jumpQueued;
   ctl.dashQueued = input.dashQueued;
-  const { grounded, groundBox, wasGrounded, impact, wall, jumped, dashed, fwd } = stepController(b, h, ctl, track.tiles);
+  const { grounded, groundBox, wasGrounded, impact, wall, jumped, dashed, fwd } = stepController(b, h, ctl, track.tiles, track.towers);
   // score = platforms reached (like the original): +1 the first time the ball lands on a new one
   if (grounded && groundBox && groundBox.pid > S.lastPid) {
     S.lastPid = groundBox.pid;
@@ -717,6 +717,49 @@ const camLook = new THREE.Vector3();
 const _desired = new THREE.Vector3();
 let menuAngle = 0;
 
+// Camera collision: never let a building or rooftop sit between the ball and the camera
+// (that's what made whole stretches look blank).
+const _co = new THREE.Vector3(),
+  _cd = new THREE.Vector3();
+function keepCameraClear() {
+  if (window.__noCamClear) return; // debug switch for tests
+  _co.copy(renderPos);
+  _co.y += 0.9;
+  _cd.subVectors(camera.position, _co);
+  const dist = _cd.length();
+  if (dist < 0.5) return;
+  _cd.divideScalar(dist);
+  const zlo = Math.min(_co.z, camera.position.z) - 1,
+    zhi = Math.max(_co.z, camera.position.z) + 1;
+  let t = dist;
+  for (const list of [track.towers, track.tiles]) {
+    for (const o of list) {
+      const b = o.box;
+      if (b.max.z < zlo || b.min.z > zhi) continue;
+      const d = rayBox(_co, _cd, b, t);
+      if (d < t) t = d;
+    }
+  }
+  if (t < dist) camera.position.copy(_co).addScaledVector(_cd, Math.max(t - 0.5, 1.2));
+}
+
+const _up = new THREE.Vector3(0, 1, 0);
+function ceilingAbove(p, maxH) {
+  _co.copy(p);
+  let t = maxH;
+  for (const o of track.tiles) {
+    const b = o.box;
+    if (b.max.z < p.z - 12 || b.min.z > p.z + 12 || b.min.y > p.y + maxH || b.max.y < p.y) continue;
+    // check straight up from the ball and from a point behind it (where the camera will be)
+    for (const dz of [0, 6]) {
+      _co.set(p.x, p.y, p.z + dz);
+      const d = rayBox(_co, _up, b, t);
+      if (d < t && d > 0.2) t = d;
+    }
+  }
+  return t;
+}
+
 // Keep roughly the same horizontal view on tall/narrow (portrait phone) screens.
 function fitFov(vfov) {
   const aspect = camera.aspect;
@@ -749,21 +792,32 @@ function updateCamera(dt) {
   if (S.state !== 'dead' || S.cause === 'crash') {
     // low and close behind the ball, like the original
     const back = 8.4 + speed * 0.025;
-    const up = 3.4 + speed * 0.012;
+    let up = 3.8 + speed * 0.012;
+    // under a roof (tunnels): drop the camera below the ceiling instead of letting it sit on top of it
+    const ceil = ceilingAbove(p, up + 2);
+    if (ceil < up + 1.2) up = Math.max(0.9, ceil - 0.9);
     // follow the ball, but blend towards the track line so jumps / falls don't yank the view
     const baseY = S.state === 'dead' ? camera.position.y - up : Math.max(p.y, ref.y + BALL_R - 1.5) * 0.75 + (ref.y + BALL_R) * 0.25;
-    _desired.set(THREE.MathUtils.lerp(p.x, ref.x, 0.1), baseY + up, p.z + back);
+    // the track behind the ball is higher on a steep descent: measure how much, so the camera stays
+    // above the rooftop behind you instead of sinking into the building under it
+    const rise = Math.max(0, track.refAt(p.z + back).y - ref.y);
+    _desired.set(THREE.MathUtils.lerp(p.x, ref.x, 0.1), baseY + up + rise, p.z + back);
     camera.position.x = damp(camera.position.x, _desired.x, 7, dt);
     camera.position.y = damp(camera.position.y, _desired.y, 8, dt);
     if (S.state === 'dead') camera.position.z = damp(camera.position.z, _desired.z + 4, 1.5, dt);
     else camera.position.z = _desired.z;
-    // look down the slope: aim at the track a little ahead so the descent stays in view
-    const lookY = Math.min(p.y - 0.4, refAhead.y + BALL_R + 0.6);
+    // look down the slope: aim at the track ahead, and further down when a drop is coming,
+    // so the rooftop you're about to land on is always on screen
+    let low = refAhead.y;
+    for (const dz of [8, 24, 32]) low = Math.min(low, track.refAt(p.z - dz).y);
+    // (but never so low that a high-flying ball leaves the top of the screen)
+    const lookY = Math.max(Math.min(p.y - 0.4, refAhead.y + BALL_R + 0.6, low + BALL_R + 3), p.y - 5.5);
     camLook.set(THREE.MathUtils.lerp(p.x, refAhead.x, 0.3), damp(camLook.y, lookY, 10, dt), p.z - 18);
   } else {
     // falling: stop following forward, keep watching the ball drop away
     camLook.lerp(p, 1 - Math.exp(-4 * dt));
   }
+  keepCameraClear();
   camera.lookAt(camLook);
   // lateral lean
   camera.rotateZ(THREE.MathUtils.clamp(-ball.vel.x * 0.0045, -0.08, 0.08));
@@ -1222,4 +1276,4 @@ renderer.domElement.addEventListener('webglcontextlost', (e) => {
 });
 
 // debug / testing hooks
-window.__slope = { S, ball, track, startRun, camera, pools, THREE, sectionSpeed };
+window.__slope = { S, ball, track, startRun, camera, pools, THREE, sectionSpeed, renderPos, rayBox };
