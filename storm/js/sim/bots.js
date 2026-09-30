@@ -7,7 +7,7 @@ import { makeInput, eyeY, M_BUS, M_FALL, M_GLIDE, M_GROUND, M_SWIM } from '../co
 import { weaponScore } from '../core/items.js';
 import { wrapAngle } from '../core/combat.js';
 import { buildTarget, placeCheck } from '../core/buildtarget.js';
-import { K_WALL, K_RAMP, K_CONE } from '../core/pieces.js';
+import { K_WALL, K_FLOOR, K_RAMP, K_CONE, DIRS as DIRS4 } from '../core/pieces.js';
 import { outsideStorm } from '../core/storm.js';
 import { PROP_TYPES } from '../core/props.js';
 
@@ -44,64 +44,167 @@ export function buildingAt(map, x, y, z) {
   return null;
 }
 
-function nearestDoor(b, x, z) {
-  let best = null;
-  let bd = Infinity;
-  for (const d of b.doors) {
-    const dd = (d.ox - x) ** 2 + (d.oz - z) ** 2;
-    if (dd < bd) {
-      bd = dd;
-      best = d;
+// Cell graph of one building from its current pieces: floors per level, walls (doors are
+// passable, windows are not), ramps linking their low-end cell to the cell above their top.
+function navGraph(world, b) {
+  const P = world.pieces;
+  const G = C.GRID;
+  const cx0 = Math.round(b.x0 / G);
+  const cz0 = Math.round(b.z0 / G);
+  const W = Math.round((b.x1 - b.x0) / G);
+  const D = Math.round((b.z1 - b.z0) / G);
+  const LV = b.levels;
+  const N = W * D * LV;
+  const OUT = N;
+  const id = (i, j, l) => (l * D + j) * W + i;
+  const adj = [];
+  for (let n = 0; n <= N; n++) adj.push([]);
+  const walk = new Uint8Array(N);
+  const ramps = [];
+  const door = new Map(); // node -> [outer x, outer z]
+  for (let l = 0; l < LV; l++)
+    for (let j = 0; j < D; j++)
+      for (let i = 0; i < W; i++) {
+        const X = cx0 + i;
+        const Z = cz0 + j;
+        const Y = b.L + l;
+        const r = P.atSlot(K_RAMP, X, Y, Z, 0);
+        if (r) {
+          ramps.push([i, j, l, r]);
+          continue;
+        }
+        if (l === 0 || P.atSlot(K_FLOOR, X, Y, Z, 0)) walk[id(i, j, l)] = 1;
+      }
+  const open = (X, Y, Z, o) => {
+    const w = P.atSlot(0, X, Y, Z, o);
+    return !w || (w.v | 0) === 1;
+  };
+  const link = (a, c) => {
+    adj[a].push(c);
+    adj[c].push(a);
+  };
+  for (let l = 0; l < LV; l++) {
+    const Y = b.L + l;
+    for (let j = 0; j < D; j++)
+      for (let i = 0; i < W; i++) {
+        const a = id(i, j, l);
+        if (!walk[a]) continue;
+        if (i + 1 < W && walk[id(i + 1, j, l)] && open(cx0 + i + 1, Y, cz0 + j, 0)) link(a, id(i + 1, j, l));
+        if (j + 1 < D && walk[id(i, j + 1, l)] && open(cx0 + i, Y, cz0 + j + 1, 1)) link(a, id(i, j + 1, l));
+        if (l !== 0) continue;
+        const cx = (cx0 + i) * G + 2;
+        const cz = (cz0 + j) * G + 2;
+        let d = null;
+        if (i === 0 && open(cx0, Y, cz0 + j, 0)) d = [cx0 * G - 2.2, cz];
+        else if (i === W - 1 && open(cx0 + W, Y, cz0 + j, 0)) d = [(cx0 + W) * G + 2.2, cz];
+        else if (j === 0 && open(cx0 + i, Y, cz0, 1)) d = [cx, cz0 * G - 2.2];
+        else if (j === D - 1 && open(cx0 + i, Y, cz0 + D, 1)) d = [cx, (cz0 + D) * G + 2.2];
+        if (d) {
+          door.set(a, d);
+          link(a, OUT);
+        }
+      }
+  }
+  for (const [i, j, l, r] of ramps) {
+    const n = id(i, j, l);
+    const dx = DIRS4[r.o & 3][0];
+    const dz = DIRS4[r.o & 3][1];
+    const li = i - dx;
+    const lj = j - dz;
+    const hi = i + dx;
+    const hj = j + dz;
+    const Y = b.L + l;
+    const X = cx0 + i;
+    const Z = cz0 + j;
+    // wall between two x/z-adjacent cells (a -> a+d)
+    const between = (ai, aj, bi, bj, YY) => {
+      if (ai !== bi) return open(cx0 + Math.max(ai, bi), YY, cz0 + aj, 0);
+      return open(cx0 + ai, YY, cz0 + Math.max(aj, bj), 1);
+    };
+    if (li >= 0 && li < W && lj >= 0 && lj < D && walk[id(li, lj, l)] && between(li, lj, i, j, Y)) link(id(li, lj, l), n);
+    if (l + 1 < LV && hi >= 0 && hi < W && hj >= 0 && hj < D && walk[id(hi, hj, l + 1)] && between(i, j, hi, hj, Y + 1)) link(n, id(hi, hj, l + 1));
+    void X;
+    void Z;
+  }
+  return { W, D, LV, cx0, cz0, adj, walk, OUT, door, id };
+}
+
+function bfs(g, from, to) {
+  if (from === to) return [from];
+  const prev = new Int32Array(g.adj.length).fill(-2);
+  prev[from] = -1;
+  const q = [from];
+  for (let qi = 0; qi < q.length; qi++) {
+    const n = q[qi];
+    for (const m of g.adj[n]) {
+      if (prev[m] !== -2) continue;
+      prev[m] = n;
+      if (m === to) {
+        const path = [m];
+        let k = n;
+        while (k !== -1) {
+          path.push(k);
+          k = prev[k];
+        }
+        return path.reverse();
+      }
+      q.push(m);
     }
   }
-  return best;
+  return null;
+}
+
+function nodeOf(g, b, x, y, z) {
+  const i = Math.max(0, Math.min(g.W - 1, Math.floor(x / C.GRID) - g.cx0));
+  const j = Math.max(0, Math.min(g.D - 1, Math.floor(z / C.GRID) - g.cz0));
+  const l = Math.max(0, Math.min(g.LV - 1, Math.floor((y - b.L * C.LEVEL + 1.2) / C.LEVEL)));
+  return g.id(i, j, l);
+}
+
+// append waypoints for a node path (OUT = outside)
+function emit(g, path, w) {
+  for (let k = 0; k < path.length; k++) {
+    const n = path[k];
+    if (n === g.OUT) {
+      // leaving: previous node was the door cell
+      if (k > 0) {
+        const d = g.door.get(path[k - 1]);
+        if (d) w.push(d);
+      }
+      continue;
+    }
+    if (k > 0 && path[k - 1] === g.OUT) {
+      const d = g.door.get(n);
+      if (d) w.push(d);
+    }
+    const i = n % g.W;
+    const j = Math.floor(n / g.W) % g.D;
+    w.push([(g.cx0 + i) * C.GRID + 2, (g.cz0 + j) * C.GRID + 2]);
+  }
 }
 
 // Waypoints [[x,z], ...] from a character position to a target (null if unreachable)
-export function planPath(map, from, to) {
+export function planPath(world, from, to) {
+  const map = world.map;
   const A = buildingAt(map, from.x, from.y, from.z);
   const B = buildingAt(map, to.x, to.y, to.z);
   const w = [];
-  const stairsOf = (b, l) => b.stairs.find((s) => s.l === l);
   if (A && B && A.b === B.b) {
-    if (A.lvl < B.lvl) {
-      for (let l = A.lvl; l < B.lvl; l++) {
-        const s = stairsOf(A.b, l);
-        if (!s) return null;
-        w.push([s.bx, s.bz], [s.tx, s.tz]);
-      }
-    } else if (A.lvl > B.lvl) {
-      for (let l = A.lvl - 1; l >= B.lvl; l--) {
-        const s = stairsOf(A.b, l);
-        if (!s) return null;
-        w.push([s.tx, s.tz], [s.bx, s.bz]);
-      }
-    }
+    const g = navGraph(world, A.b);
+    const p = bfs(g, nodeOf(g, A.b, from.x, from.y, from.z), nodeOf(g, A.b, to.x, to.y, to.z));
+    if (!p) return null;
+    emit(g, p.slice(1), w);
   } else {
-    let px = from.x;
-    let pz = from.z;
     if (A) {
-      for (let l = A.lvl - 1; l >= 0; l--) {
-        const s = stairsOf(A.b, l);
-        if (!s) break;
-        w.push([s.tx, s.tz], [s.bx, s.bz]);
-      }
-      const d = nearestDoor(A.b, to.x, to.z);
-      if (d) {
-        w.push([d.ix, d.iz], [d.ox, d.oz]);
-        px = d.ox;
-        pz = d.oz;
-      }
+      const g = navGraph(world, A.b);
+      const p = bfs(g, nodeOf(g, A.b, from.x, from.y, from.z), g.OUT);
+      if (p) emit(g, p.slice(1), w);
     }
     if (B) {
-      const d = nearestDoor(B.b, px, pz);
-      if (!d) return null;
-      w.push([d.ox, d.oz], [d.ix, d.iz]);
-      for (let l = 0; l < B.lvl; l++) {
-        const s = stairsOf(B.b, l);
-        if (!s) return null;
-        w.push([s.bx, s.bz], [s.tx, s.tz]);
-      }
+      const g = navGraph(world, B.b);
+      const p = bfs(g, g.OUT, nodeOf(g, B.b, to.x, to.y, to.z));
+      if (!p) return null;
+      emit(g, p, w);
     }
   }
   w.push([to.x, to.z]);
@@ -253,7 +356,41 @@ export class BotBrain {
     this.control(dt);
   }
 
+  // Blocked by an outer wall of a map building on the way somewhere else: walk along the
+  // building's face (toward the goal) until we are past its corner.
+  startRectDetour(piece) {
+    const sv = this.sv;
+    const c = this.p.c;
+    const px = piece.x * C.GRID + 2;
+    const pz = piece.z * C.GRID + 2;
+    const arr = buildingIndex(sv.map).get((Math.floor(px / 16) + 100) * 1000 + Math.floor(pz / 16) + 100);
+    if (!arr) return;
+    let B = null;
+    for (const b of arr) if (px >= b.x0 - 1 && px <= b.x1 + 1 && pz >= b.z0 - 1 && pz <= b.z1 + 1) B = b;
+    if (!B) return;
+    if (c.x > B.x0 && c.x < B.x1 && c.z > B.z0 && c.z < B.z1) return; // inside: graph navigation handles it
+    const g = this.goal;
+    const wp = this.path && this.path.length === 1 && this.path[0];
+    if (!wp) return;
+    if (g && g.x > B.x0 && g.x < B.x1 && g.z > B.z0 && g.z < B.z1) return; // going into this building
+    const gx = wp[0] - c.x;
+    const gz = wp[1] - c.z;
+    const m = 1.6;
+    let tx = 0;
+    let tz = 0;
+    let end;
+    if (c.x <= B.x0 || c.x >= B.x1) {
+      tz = gz > 0 ? 1 : gz < 0 ? -1 : this.rng.chance(0.5) ? 1 : -1;
+      end = tz > 0 ? B.z1 + m : B.z0 - m;
+    } else {
+      tx = gx > 0 ? 1 : gx < 0 ? -1 : this.rng.chance(0.5) ? 1 : -1;
+      end = tx > 0 ? B.x1 + m : B.x0 - m;
+    }
+    this.rectDetour = { tx, tz, end, until: sv.t + 5, px: c.x, pz: c.z, pt: sv.t };
+  }
+
   onStep(out) {
+    if (out.blocked && out.blockPiece && out.blockPiece.map && !this.rectDetour && this.state !== 'fight' && this.p.c.mode === M_GROUND) this.startRectDetour(out.blockPiece);
     if (out.blocked) {
       if (out.blockPiece) {
         this.blockPiece = out.blockPiece;
@@ -470,6 +607,17 @@ export class BotBrain {
     this.perceive(t);
     this.checkProgress(t);
     this.decide(t);
+    // walked into (or out of) a building the current path didn't plan for: re-plan
+    const g = this.goal;
+    if (g && c.mode === M_GROUND) {
+      const cb = buildingAt(this.sv.map, c.x, c.y, c.z);
+      const nb = cb ? cb.b : null;
+      if (nb !== g.inB) {
+        g.inB = nb;
+        const np = planPath(this.sv.world, c, g);
+        if (np) this.path = np;
+      }
+    }
   }
 
   perceive(t) {
@@ -560,6 +708,10 @@ export class BotBrain {
     this.progT = t;
     if (!this.stuck) return;
     if (this.stuck === 1 || this.stuck === 4) this.jumpReq = true;
+    if (this.stuck === 2 && this.goal) {
+      const np = planPath(this.sv.world, c, this.goal);
+      if (np) this.path = np;
+    }
     if (this.stuck === 2 || this.stuck === 5) {
       const a = this.rng.float(0, Math.PI * 2);
       this.detourX = Math.cos(a);
@@ -596,12 +748,13 @@ export class BotBrain {
 
   setGoal(x, y, z, kind, id, ref = null) {
     const c = this.p.c;
-    const path = planPath(this.sv.map, c, { x, y, z });
+    const path = planPath(this.sv.world, c, { x, y, z });
     if (!path) {
       this.blacklist.set(kind + ':' + id, this.sv.t + 60);
       return false;
     }
-    this.goal = { x, y, z, kind, id, ref, t0: this.sv.t, replans: 0 };
+    const inB = buildingAt(this.sv.map, c.x, c.y, c.z);
+    this.goal = { x, y, z, kind, id, ref, t0: this.sv.t, replans: 0, inB: inB ? inB.b : null };
     this.path = path;
     this.stuck = 0;
     if (kind === 'item' || kind === 'chest' || kind === 'box') this.sv.claims.set(kind + ':' + id, { id: this.p.id, until: this.sv.t + 12 });
@@ -988,7 +1141,7 @@ export class BotBrain {
         if (last) {
           if (Math.abs(g.y - c.y) < 2.2 || g.kind === 'zone' || g.kind === 'hold' || g.kind === 'noise') this.arrive(g);
           else if (g.replans++ < 2) {
-            const np = planPath(sv.map, c, g);
+            const np = planPath(sv.world, c, g);
             if (np && np.length > 1) this.path = np;
             else {
               this.ban(g);
@@ -1011,6 +1164,23 @@ export class BotBrain {
     if (t < this.detourT) {
       mx = this.detourX;
       mz = this.detourZ;
+    }
+    const rd = this.rectDetour;
+    if (rd) {
+      let done = t > rd.until || (rd.tx > 0 ? c.x > rd.end : rd.tx < 0 ? c.x < rd.end : rd.tz > 0 ? c.z > rd.end : c.z < rd.end);
+      if (t - rd.pt > 0.8) {
+        // not sliding along the wall any more (another obstacle): give up the detour
+        if (Math.abs(c.x - rd.px) + Math.abs(c.z - rd.pz) < 1.2) done = true;
+        rd.px = c.x;
+        rd.pz = c.z;
+        rd.pt = t;
+      }
+      if (done || this.state === 'fight' || !g || this.stuck >= 2) this.rectDetour = null;
+      else {
+        mx = rd.tx;
+        mz = rd.tz;
+        sprint = true;
+      }
     }
 
     const o = this.target;

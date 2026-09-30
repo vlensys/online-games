@@ -190,7 +190,8 @@ export class Game {
         break;
       case 'drop': {
         const c = me.c;
-        if (c.mode === M_BUS || Math.hypot(c.x - m.x, c.z - m.z) > 20) {
+        const fresh = this.now() - (me.jumpT || 0) < 1.5;
+        if (c.mode === M_BUS || (fresh && c.mode === M_FALL && Math.hypot(c.x - m.x, c.z - m.z) > 20)) {
           c.x = m.x;
           c.y = m.y;
           c.z = m.z;
@@ -771,6 +772,7 @@ export class Game {
       c.z = _dir[2];
       if (A.jump && this.state === 'bus' && this.T >= this.bus.door) {
         this.sendCmd({ t: 'jmp' });
+        me.jumpT = this.now();
         c.mode = M_FALL;
         c.y = this.bus.y - 3;
         c.vy = -5;

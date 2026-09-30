@@ -30,6 +30,16 @@ export class Renderer {
     const q = quality === 'auto' ? (isMobile ? 'low' : 'medium') : quality;
     this.q = q;
     this.gl = new THREE.WebGLRenderer({ canvas, antialias: q === 'high' || (q === 'medium' && !isMobile), powerPreference: 'high-performance', stencil: false });
+    this.contextLost = false;
+    canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      this.contextLost = true;
+      if (this.onContextLost) this.onContextLost();
+    });
+    canvas.addEventListener('webglcontextrestored', () => {
+      this.contextLost = false;
+      if (this.onContextRestored) this.onContextRestored();
+    });
     this.gl.outputColorSpace = THREE.SRGBColorSpace;
     this.gl.toneMapping = THREE.NoToneMapping;
     this.gl.shadowMap.type = THREE.PCFShadowMap;
@@ -159,10 +169,13 @@ export class Renderer {
   clearWorld() {
     if (!this.worldGroup) return;
     this.scene.remove(this.worldGroup);
+    const mats = new Set();
     this.worldGroup.traverse((o) => {
       if (o.geometry) o.geometry.dispose();
       if (o.isInstancedMesh) o.dispose();
+      if (o.material) mats.add(o.material);
     });
+    for (const m of mats) m.dispose(); // shared textures stay alive
     this.worldGroup = null;
     this.views = null;
     this.terrain = null;
@@ -338,6 +351,6 @@ export class Renderer {
       this.views.props.update(dt);
       this.views.chests.update(t);
     }
-    this.gl.render(this.scene, this.camera);
+    if (!this.contextLost) this.gl.render(this.scene, this.camera);
   }
 }

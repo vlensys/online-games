@@ -25,6 +25,16 @@ const check = (name, ok, info = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${info ? ' - ' + info : ''}`);
 };
 const wait = (p, ms) => p.waitForTimeout(ms);
+// poll fn() in the page until it returns something truthy (or time out -> null)
+async function until(page, fn, arg, timeout = 60000, every = 500) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeout) {
+    const v = await page.evaluate(fn, arg).catch(() => null);
+    if (v) return v;
+    await page.waitForTimeout(every);
+  }
+  return null;
+}
 
 // ---------------------------------------------------------------- menu + solo match
 {
@@ -101,29 +111,46 @@ const wait = (p, ms) => p.waitForTimeout(ms);
   await wait(cli, 2500);
   check('client reaches the lobby', await cli.isVisible('#menuLobby'));
   await host.click('#hostStart');
-  await wait(host, 9000);
-  const both = await Promise.all([host, cli].map((p) => p.evaluate(() => window.__storm && window.__storm.state)));
-  check('match starts on both tabs', both.every((s) => s && s !== 'wait'), both.join(','));
+  // wait until both tabs have built the island and the match has begun
+  const ready = () => window.__storm && window.__storm.state !== 'wait' && window.__storm.T > 0 && window.__storm.state;
+  const both = await Promise.all([until(host, ready, null, 90000), until(cli, ready, null, 90000)]);
+  check('match starts on both tabs', both.every(Boolean), both.join(','));
+  // host drops from the bus onto flat ground inside a town and waits until it has landed
+  await until(host, () => window.__storm.T >= window.__storm.bus.door, null, 30000);
   await host.keyboard.press('Space');
   await cli.keyboard.press('Space');
-  await wait(host, 1500);
+  await until(host, () => window.__storm.me.c.mode !== 0, null, 30000);
   await host.evaluate(() => {
     const g = window.__storm;
     const p = g.map.pois[0];
-    Object.assign(g.me.c, { x: p.x + 3, z: p.z + 3, y: p.y + 2, mode: 3, grounded: false, vy: 0, peakY: p.y + 2 });
+    const x = p.x + 30;
+    const z = p.z + 30;
+    const y = g.world.groundAt(x, z, 400);
+    Object.assign(g.me.c, { x, z, y: y + 0.3, mode: 3, grounded: false, vy: 0, peakY: y + 0.3 });
     g.dbg('tp');
     g.dbg('god');
     g.dbg('give', { it: 'mats' });
   });
-  await wait(host, 4000);
-  const before = await cli.evaluate(() => window.__storm.world.pieces.size);
-  await host.keyboard.press('KeyQ');
-  await wait(host, 600);
-  await host.evaluate(() => window.__storm.placePiece(window.__storm._bt));
-  await wait(host, 3000);
-  const after = await cli.evaluate(() => window.__storm.world.pieces.size);
-  check("client sees the host's build", after === before + 1, `${before} -> ${after}`);
-  const bots = await cli.evaluate(() => [...window.__storm.players.values()].filter((p) => !p.human).length);
+  await until(host, () => window.__storm.me.c.mode === 3 && window.__storm.me.c.grounded && window.__storm.me.inv.mats[0] >= 100, null, 30000);
+  const before = await cli.evaluate(() => (window.__storm ? window.__storm.world.pieces.size : -1));
+  // find a valid wall slot around the host (turn until the ghost is valid) and place it
+  const placed = await host.evaluate(async () => {
+    const g = window.__storm;
+    const { buildTarget, placeCheck } = await import('./js/core/buildtarget.js');
+    for (let k = 0; k < 8; k++) {
+      const t = buildTarget(g.world, g.me.c, g.yaw + (k * Math.PI) / 4, 0, 0, 0, {});
+      if (placeCheck(g.world, t) === 0) {
+        g.me.mat = 0;
+        g.placePiece(t);
+        g.link.flush();
+        return true;
+      }
+    }
+    return false;
+  });
+  const after = placed ? await until(cli, (n) => window.__storm && window.__storm.world.pieces.size === n + 1 && window.__storm.world.pieces.size, before, 20000) : null;
+  check("client sees the host's build", placed && after === before + 1, `placed=${placed} ${before} -> ${after}`);
+  const bots = await cli.evaluate(() => (window.__storm ? [...window.__storm.players.values()].filter((p) => !p.human).length : -1));
   check('client knows the bots', bots === 5, String(bots));
   await ctx.close();
 }

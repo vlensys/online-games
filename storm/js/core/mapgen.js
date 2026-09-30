@@ -18,10 +18,10 @@ const POI_DEFS = [
   { name: 'Sunset Suburbs', style: 'suburb', n: [7, 9], r: 70 },
 ];
 
-const PASTEL = [0xf4e6c6, 0xcfe3f1, 0xd7ecc6, 0xf5d2c6, 0xfbeeb0, 0xf7f7f2, 0xe6d6f0, 0xc9ece4];
+const PASTEL = [0xffe0a0, 0xa9d6f5, 0xc2e89c, 0xf9bba6, 0xfff09a, 0xfaf6ea, 0xd6c2f5, 0x9fe6d2];
 const BRICKS = [0xc2644a, 0xb8876a, 0xa9a39b, 0xcf8a5c, 0x9c5140];
 const METALS = [0x6fa3a8, 0xc9774a, 0x6d86b3, 0xa4acb4, 0xb8a860, 0x7aa36b];
-const ROOFS = [0xa73c2f, 0x4b5b7c, 0x4f7a42, 0x6e4a33, 0x2f6f73, 0x8a3b5a];
+const ROOFS = [0xd24c3c, 0x5b6f9c, 0x5e9a4c, 0x8e6242, 0x3b9196, 0xb04e76];
 
 const STYLES = {
   wood: { mat: 0, sizes: [[2, 2, 2], [2, 3, 2], [3, 3, 1], [2, 2, 1], [2, 3, 1]], roof: 'gable', wall: PASTEL },
@@ -540,6 +540,10 @@ function makeBuilding(rng, poi, ox, oz, w, d, lv, hollow, mat, style, addPiece, 
             if (l === 0 && doorCells.has(k)) continue;
             if (holes.has(tx + ',' + tz + ',' + (l + 1))) continue;
             if (holes.has(x + ',' + z + ',' + l)) continue;
+            // the low end must open onto a free cell inside the building (walkable approach)
+            const lx = x - DIRS[dir][0];
+            const lz = z - DIRS[dir][1];
+            if (!inside(lx, lz) || used.has(lx + ',' + lz) || holes.has(lx + ',' + lz + ',' + l)) continue;
             cands.push([x, z, dir, tx, tz]);
           }
       if (!cands.length) break;
@@ -580,8 +584,14 @@ function makeBuilding(rng, poi, ox, oz, w, d, lv, hollow, mat, style, addPiece, 
         const zs = [];
         for (let z = oz; z < oz + d; z++) {
           let clash = false;
-          for (const s of stairs)
-            if (s.l === l && ((s.x === lx - 1 && s.tx === lx) || (s.x === lx && s.tx === lx - 1)) && s.z === z) clash = true;
+          const cross = (a, b) => (a === lx - 1 && b === lx) || (a === lx && b === lx - 1);
+          for (const s of stairs) {
+            if (s.z !== z || s.tz !== z) continue;
+            const low = s.x - DIRS[s.dir][0];
+            // ramp->top edge (same level and the level above) and approach->ramp edge
+            if ((s.l === l || s.l + 1 === l) && cross(s.x, s.tx)) clash = true;
+            if (s.l === l && cross(low, s.x)) clash = true;
+          }
           if (!clash) zs.push(z);
         }
         const gap = zs.length ? zs[Math.floor(rng.next() * zs.length)] : null;
@@ -591,8 +601,13 @@ function makeBuilding(rng, poi, ox, oz, w, d, lv, hollow, mat, style, addPiece, 
         const xs = [];
         for (let x = ox; x < ox + w; x++) {
           let clash = false;
-          for (const s of stairs)
-            if (s.l === l && ((s.z === lz - 1 && s.tz === lz) || (s.z === lz && s.tz === lz - 1)) && s.x === x) clash = true;
+          const cross = (a, b) => (a === lz - 1 && b === lz) || (a === lz && b === lz - 1);
+          for (const s of stairs) {
+            if (s.x !== x || s.tx !== x) continue;
+            const low = s.z - DIRS[s.dir][1];
+            if ((s.l === l || s.l + 1 === l) && cross(s.z, s.tz)) clash = true;
+            if (s.l === l && cross(low, s.z)) clash = true;
+          }
           if (!clash) xs.push(x);
         }
         const gap = xs.length ? xs[Math.floor(rng.next() * xs.length)] : null;

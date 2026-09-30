@@ -60,6 +60,8 @@ function boot() {
     fatal('3D graphics failed to start (' + (e.message || e) + ').');
     return;
   }
+  app.renderer.onContextLost = () => toast('Graphics were interrupted - recovering\u2026', 4);
+  app.renderer.onContextRestored = () => toast('Graphics restored', 2);
   app.hud = new Hud();
   app.input = new Input($('view'));
   app.touch = new Touch($('touch'));

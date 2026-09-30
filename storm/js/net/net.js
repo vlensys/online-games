@@ -458,8 +458,11 @@ export class HostNet {
 
   checkIdle() {
     const now = performance.now();
+    const frozen = this.lastCheck && now - this.lastCheck > 8000;
+    this.lastCheck = now;
     for (const [cid, c] of this.conns) {
-      if (now - c.lastRx > 20000) {
+      if (frozen) c.lastRx = Math.max(c.lastRx, now - 3000);
+      if (now - c.lastRx > 35000) {
         c.close();
         this.conns.delete(cid);
         this.runner.close(cid);
@@ -491,13 +494,18 @@ class RemoteLink {
     conn.onClose = (why) => {
       this.finish(why);
     };
+    this.lastTick = performance.now();
     this.ping = setInterval(() => {
       if (this.closed) return;
-      if (performance.now() - conn.lastRx > 12000) {
+      const now = performance.now();
+      // if this page itself was frozen (building the world, background tab), don't blame the network
+      if (now - this.lastTick > 4000) conn.lastRx = Math.max(conn.lastRx, now - 2000);
+      this.lastTick = now;
+      if (now - conn.lastRx > 20000) {
         conn.close();
         return;
       }
-      this.q.push({ t: 'ping', c: Math.round(performance.now()) });
+      this.q.push({ t: 'ping', c: Math.round(now) });
       this.flush();
     }, 2000);
   }
