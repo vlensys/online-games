@@ -45,7 +45,9 @@ export function stepController(b, h, ctl, tiles) {
     dashed = false;
   if (ctl.plus) {
     if (ctl.jumpQueued > 0 && b.coyote > 0) {
-      b.vel.y = Math.max(b.vel.y * 0.5, 0) + JUMP_V;
+      // jump relative to the slope: while rolling, vel.y already follows the surface, so adding the
+      // impulse gives the same small hop on any slope (world-up jumps on a steep descent flew for seconds)
+      b.vel.y = Math.max(b.vel.y, -26) + JUMP_V;
       b.grounded = false;
       b.coyote = 0;
       b.jumpLock = 0.1;

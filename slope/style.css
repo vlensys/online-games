@@ -1,8 +1,8 @@
 :root {
-  --neon: #3ee07a;
-  --neon-rgb: 62, 224, 122;
-  --bg: #050806;
-  --panel: #0c0f0e;
+  --neon: #1eff3c;
+  --neon-rgb: 30, 255, 60;
+  --bg: #000000;
+  --panel: #070907;
   --line: rgba(255, 255, 255, 0.12);
   --text: #eef2ef;
   --muted: #8d9892;
@@ -441,12 +441,9 @@ body.touch .desk-only {
   text-align: center;
 }
 #hud-score {
-  font-size: 52px;
-  font-weight: 800;
-  line-height: 1;
-  color: #fff;
-  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.7);
-  font-variant-numeric: tabular-nums;
+  display: block;
+  margin: 0 auto;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.8));
 }
 #hud-sub {
   white-space: nowrap;
@@ -711,7 +708,8 @@ body.touch #hud-abilities .ab:not(#ab-shield) {
     max-width: 170px;
   }
   #hud-score {
-    font-size: 40px;
+    transform: scale(0.8);
+    transform-origin: top center;
   }
   #hud-best,
   #hud-gems {

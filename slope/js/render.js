@@ -131,19 +131,22 @@ vec3 applyFog(vec3 col) {
 
 const tileFrag = /* glsl */ `
 ${commonFrag}
+uniform float uCell;
+uniform float uLine;
+uniform float uAllFaces;
 void main() {
   vec2 uv; vec2 hh; float face;
   faceCoords(uv, hh, face);
   vec2 ed = hh - abs(uv);
   float e = min(ed.x, ed.y);
   float fe = max(fwidth(e), 1e-4);
-  float edge = 1.0 - smoothstep(0.05, 0.05 + fe * 1.5, e);
+  float edge = 1.0 - smoothstep(uLine * 1.6, uLine * 1.6 + fe * 1.5, e);
   float top = step(0.9, face);
-  float grid = gridLine(uv, 2.0, 0.025) * top;
+  float grid = gridLine(uv, uCell, uLine / uCell) * max(top, uAllFaces);
   vec3 line = uColor * vTint;
-  vec3 col = uFill * mix(0.55, 1.0, top);
-  col = mix(col, line * 0.6, grid * 0.7);
-  col = mix(col, line * 0.9, edge);
+  vec3 col = uFill;
+  col = mix(col, line * 0.85, grid);
+  col = mix(col, line, edge);
   gl_FragColor = vec4(applyFog(col), 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -157,25 +160,29 @@ void main() {
   vec2 ed = hh - abs(uv);
   float e = min(ed.x, ed.y);
   float fe = max(fwidth(e), 1e-4);
-  float edge = 1.0 - smoothstep(0.05, 0.05 + fe * 1.5, e);
-  float shade = face > 0.9 ? 1.0 : (face < 0.1 ? 0.45 : 0.7);
+  float edge = 1.0 - smoothstep(0.12, 0.12 + fe * 1.5, e);
+  float grid = gridLine(uv, 1.0, 0.05);
   vec3 base = uColor * vTint;
-  vec3 col = base * 0.72 * shade;
-  col = mix(col, base, edge * 0.85);
+  vec3 col = base * 0.28;
+  col = mix(col, base * 0.8, grid);
+  col = mix(col, base, edge);
   gl_FragColor = vec4(applyFog(col), 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`;
 
-function neonMaterial(frag, color, fill, fog) {
+function neonMaterial(frag, color, fill, fog, extra = {}) {
   return new THREE.ShaderMaterial({
     uniforms: {
       uColor: { value: new THREE.Color(color) },
       uFill: { value: new THREE.Color(fill) },
       uFogColor: { value: fog },
-      uFogNear: { value: 140 },
-      uFogFar: { value: 420 },
+      uFogNear: { value: 150 },
+      uFogFar: { value: 430 },
       uTime: { value: 0 },
+      uCell: { value: extra.cell ?? 2.5 },
+      uLine: { value: extra.line ?? 0.09 },
+      uAllFaces: { value: extra.allFaces ? 1 : 0 },
     },
     vertexShader: tileVert,
     fragmentShader: frag,
@@ -183,72 +190,48 @@ function neonMaterial(frag, color, fill, fog) {
 }
 
 export function createTileMaterial(fog) {
-  return neonMaterial(tileFrag, '#39ff88', '#040806', fog);
+  return neonMaterial(tileFrag, '#1eff3c', '#000000', fog, { cell: 2.5, line: 0.1 });
+}
+// the skyline: same look, cube grid on every face
+export function createTowerMaterial(fog, tileMat) {
+  const m = neonMaterial(tileFrag, '#1eff3c', '#000000', fog, { cell: 4, line: 0.12, allFaces: true });
+  m.uniforms.uColor = tileMat.uniforms.uColor; // share the theme colour
+  return m;
 }
 export function createHazardMaterial(fog) {
-  return neonMaterial(hazardFrag, '#e8243c', '#000000', fog);
+  return neonMaterial(hazardFrag, '#ff1a1a', '#000000', fog);
+}
+
+// Speed pad: chevrons on the tunnel floor
+export function createPadMaterial() {
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#000';
+  g.fillRect(0, 0, 128, 256);
+  g.strokeStyle = '#fff';
+  g.lineWidth = 14;
+  for (let i = 0; i < 3; i++) {
+    const y = 40 + i * 70;
+    g.beginPath();
+    g.moveTo(14, y + 40);
+    g.lineTo(64, y);
+    g.lineTo(114, y + 40);
+    g.stroke();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  return new THREE.MeshBasicMaterial({ map: tex, color: '#ffe03a', polygonOffset: true, polygonOffsetFactor: -2 });
 }
 
 // ---------------------------------------------------------------------------
 // Background: gradient sky dome, stars, drifting wireframe shapes, speed streaks.
 // ---------------------------------------------------------------------------
 export class Background {
-  constructor(scene, quality) {
-    this.group = new THREE.Group();
-    scene.add(this.group);
-
-    this.skyUniforms = {
-      uTop: { value: new THREE.Color('#020306') },
-      uHorizon: { value: new THREE.Color('#0a1410') },
-      uBottom: { value: new THREE.Color('#010203') },
-    };
-    const sky = new THREE.Mesh(
-      new THREE.SphereGeometry(950, 32, 16),
-      new THREE.ShaderMaterial({
-        uniforms: this.skyUniforms,
-        side: THREE.BackSide,
-        depthWrite: false,
-        vertexShader: `varying vec3 vDir; void main(){ vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
-        fragmentShader: `uniform vec3 uTop; uniform vec3 uHorizon; uniform vec3 uBottom; varying vec3 vDir;
-          void main(){ float h = normalize(vDir).y;
-            vec3 c = h > -0.05 ? mix(uHorizon, uTop, pow(clamp((h + 0.05) / 1.05, 0.0, 1.0), 0.5)) : mix(uHorizon, uBottom, pow(clamp((-h - 0.05) / 0.95, 0.0, 1.0), 0.4));
-            gl_FragColor = vec4(c, 1.0);
-            #include <colorspace_fragment>
-          }`,
-      })
-    );
-    sky.renderOrder = -10;
-    this.sky = sky;
-    this.group.add(sky);
-
-    const starCount = quality === 'low' ? 250 : 500;
-    const pos = new Float32Array(starCount * 3);
-    for (let i = 0; i < starCount; i++) {
-      const u = Math.random() * 0.9 + 0.1;
-      const th = Math.random() * Math.PI * 2;
-      const r = 800;
-      const s = Math.sqrt(1 - u * u);
-      pos[i * 3] = Math.cos(th) * s * r;
-      pos[i * 3 + 1] = u * r;
-      pos[i * 3 + 2] = Math.sin(th) * s * r;
-    }
-    const sg = new THREE.BufferGeometry();
-    sg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    this.stars = new THREE.Points(sg, new THREE.PointsMaterial({ size: 1.5, sizeAttenuation: false, color: '#9aa4b0', transparent: true, opacity: 0.45, depthWrite: false }));
-    this.stars.renderOrder = -9;
-    this.group.add(this.stars);
-  }
-
-  setTheme(horizon) {
-    this.skyUniforms.uHorizon.value.copy(horizon);
-  }
-
+  constructor() {}
+  setTheme() {}
   shift() {}
-
-  update(dt, cam) {
-    this.sky.position.copy(cam.position);
-    this.stars.position.copy(cam.position);
-  }
+  update() {}
 }
 
 let _dot;
@@ -265,6 +248,90 @@ export function dotTexture() {
   g.fillRect(0, 0, 64, 64);
   _dot = new THREE.CanvasTexture(c);
   return _dot;
+}
+
+// ---------------------------------------------------------------------------
+// Trail: a flat ribbon on the track behind the ball, like the original
+// ---------------------------------------------------------------------------
+export class Trail {
+  constructor(scene, n = 40) {
+    this.n = n;
+    this.points = [];
+    this.pos = new Float32Array(n * 2 * 3);
+    this.alpha = new Float32Array(n * 2);
+    const idx = [];
+    for (let i = 0; i < n - 1; i++) {
+      const a = i * 2;
+      idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(this.pos, 3));
+    g.setAttribute('alpha', new THREE.BufferAttribute(this.alpha, 1));
+    g.setIndex(idx);
+    this.mat = new THREE.ShaderMaterial({
+      uniforms: { uColor: { value: new THREE.Color('#1eff3c') } },
+      vertexShader: `attribute float alpha; varying float vA; void main(){ vA = alpha; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+      fragmentShader: `uniform vec3 uColor; varying float vA; void main(){ gl_FragColor = vec4(uColor, vA);
+        #include <colorspace_fragment>
+      }`,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: -3,
+    });
+    this.mesh = new THREE.Mesh(g, this.mat);
+    this.mesh.frustumCulled = false;
+    scene.add(this.mesh);
+  }
+  reset() {
+    this.points.length = 0;
+    this.alpha.fill(0);
+    this.mesh.geometry.attributes.alpha.needsUpdate = true;
+  }
+  shift(o) {
+    for (const p of this.points) {
+      p.p.add(o);
+    }
+  }
+  // p: contact point under the ball, n: ground normal, on: touching the ground
+  update(p, n, on, width = 0.28) {
+    const last = this.points[0];
+    if (!last || last.p.distanceToSquared(p) > 0.25) {
+      this.points.unshift({ p: p.clone(), n: n.clone(), on });
+      if (this.points.length > this.n) this.points.pop();
+    } else {
+      last.p.copy(p);
+      last.on = on;
+    }
+    const pts = this.points;
+    const side = new THREE.Vector3();
+    const dir = new THREE.Vector3();
+    for (let i = 0; i < this.n; i++) {
+      const o = i * 6;
+      if (i >= pts.length) {
+        this.alpha[i * 2] = this.alpha[i * 2 + 1] = 0;
+        continue;
+      }
+      const a = pts[Math.max(i - 1, 0)].p,
+        b = pts[Math.min(i + 1, pts.length - 1)].p;
+      dir.subVectors(a, b);
+      if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1);
+      side.crossVectors(dir, pts[i].n).normalize();
+      const q = pts[i].p;
+      this.pos[o] = q.x + side.x * width;
+      this.pos[o + 1] = q.y + side.y * width;
+      this.pos[o + 2] = q.z + side.z * width;
+      this.pos[o + 3] = q.x - side.x * width;
+      this.pos[o + 4] = q.y - side.y * width;
+      this.pos[o + 5] = q.z - side.z * width;
+      const t = i / (this.n - 1);
+      const al = pts[i].on ? 1 - t : 0;
+      this.alpha[i * 2] = this.alpha[i * 2 + 1] = al;
+    }
+    this.mesh.geometry.attributes.position.needsUpdate = true;
+    this.mesh.geometry.attributes.alpha.needsUpdate = true;
+  }
 }
 
 // ---------------------------------------------------------------------------

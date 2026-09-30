@@ -11,9 +11,10 @@ const DEG = Math.PI / 180;
 const clamp = THREE.MathUtils.clamp;
 const lerp = THREE.MathUtils.lerp;
 
-// Target forward speed grows with distance travelled.
-export function speedAt(dist) {
-  return 26 + 30 * (1 - Math.exp(-Math.max(dist, 0) / 3200)) + Math.max(dist, 0) / 900;
+// Like the original, speed only goes up in steps: every speed tunnel ends a section and
+// pushes the ball's target speed up a notch.
+export function sectionSpeed(section) {
+  return Math.min(24 + section * 6, 74);
 }
 
 function mulberry32(seed) {
@@ -36,14 +37,20 @@ function flightDist(v, angle, H) {
 }
 
 const TINT_FLOOR = new THREE.Color(1, 1, 1);
-const TINT_RAMP = new THREE.Color(1.35, 1.35, 1.35);
-const TINT_WALL = new THREE.Color(0.65, 0.65, 0.75);
-const TINT_PANEL = new THREE.Color(0.85, 0.95, 1.15);
 const TINT_GATE = new THREE.Color(1.1, 0.35, 1.2);
-const TINT_SPIN = new THREE.Color(1.2, 0.55, 0.2);
 const _scale = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _v = new THREE.Vector3();
+const Y_AXIS = new THREE.Vector3(0, 1, 0);
+const Z_AXIS = new THREE.Vector3(0, 0, 1);
+
+// Obstacle catalogue, straight from the original game's level generation:
+//   early: RNG blocks, slants, straights · middle: treblocks, tunnels, snakes · late: hors, verts
+// Every section ends in a speed tunnel. Section 1 = 1 early obstacle, section 2 = 2 early + 2 middle,
+// section 3 = 3 of each tier, then 4 of each tier from section 4 on.
+const EARLY = ['rng', 'slant', 'straight'];
+const MIDDLE = ['treblocks', 'tunnel', 'snake'];
+const LATE = ['hors', 'verts'];
 
 export class Track {
   constructor(scene, pools, makeSign, makeShield) {
@@ -57,20 +64,24 @@ export class Track {
     this.pickups = [];
     this.signs = [];
     this.center = [];
+    this.towers = [];
+    this.triggers = [];
+    this.pads = [];
   }
 
   reset(seed, mode, showHints) {
     for (const s of this.signs) this.scene.remove(s.sprite);
     for (const p of this.pickups) this.scene.remove(p.mesh);
-    this.pools.tiles.clear();
-    this.pools.hazards.clear();
-    this.pools.gems.clear();
+    for (const k of ['tiles', 'hazards', 'gems', 'towers', 'pads']) this.pools[k].clear();
     this.tiles = [];
     this.hazards = [];
     this.gems = [];
     this.pickups = [];
     this.signs = [];
     this.center = [];
+    this.towers = [];
+    this.triggers = [];
+    this.pads = [];
     this.rng = mulberry32(seed);
     this.mode = mode;
     this.plus = mode === 'plus';
@@ -78,20 +89,23 @@ export class Track {
     this.hintCount = {};
     this.distBase = 0;
     this.cur = new THREE.Vector3(0, 0, 14);
-    this.pitch = 12;
-    this.W = 11;
+    this.pitch = 18;
+    this.W = 10;
     this.lastEnds = [];
     this.pending = [];
-    this.recent = [];
-    this.lastShieldDist = 0;
+    this.pid = 0;
+    this.genSection = 0;
+    this.queue = [];
+    this.lastName = '';
+    this.cityZ = 60;
+    this.lastShieldPid = 0;
     this.pieces = 0;
     this.safeZ = 1e9; // no pending landing zone
 
-    // runway
-    this.tile(34, { w: 14, pitch: 7 });
-    this.tile(26, { w: 12, pitch: 10 });
-    this.tile(20, { w: 11, pitch: 12 });
-    this.gemLine(this.tiles[this.tiles.length - 1], 0, 0, 5, 18, 5);
+    // start platform (a wide rooftop)
+    this.tile(40, { w: 12, pitch: 10 });
+    this.tile(24, { w: 11, pitch: 16, join: true });
+    this.buildQueue();
   }
 
   rf(a, b) {
@@ -106,14 +120,19 @@ export class Track {
   distAt(z) {
     return this.distBase - z;
   }
+  get v() {
+    return sectionSpeed(this.genSection) + 1.5;
+  }
 
   // ------------------------------------------------------------------ primitives
+  // A platform segment. Each call is a new "platform" for scoring unless join:true.
   tile(len, o = {}) {
     const w = o.w ?? this.W;
     const pitch = (o.pitch ?? this.pitch) * DEG;
     const roll = (o.roll ?? 0) * DEG;
+    const yaw = (o.yaw ?? 0) * DEG;
     const thick = o.thick ?? 1.6;
-    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-pitch, 0, roll, 'XYZ'));
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-pitch, -yaw, roll, 'YXZ'));
     const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(q);
     const up = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
     const right = new THREE.Vector3(1, 0, 0).applyQuaternion(q);
@@ -121,14 +140,16 @@ export class Track {
     if (o.xOff) start.x += o.xOff;
     const center = start.clone().addScaledVector(dir, len / 2).addScaledVector(up, -thick / 2);
     const box = makeBox(center, q, new THREE.Vector3(w / 2, thick / 2, len / 2), { surface: o.surface !== false, bounce: o.bounce });
+    if (!o.join || !this.pid) this.pid++;
+    box.pid = this.pid;
     const end = start.clone().addScaledVector(dir, len);
-    const t = { box, start, end, dir, up, right, q, len, w, thick, slot: -1 };
-    t.slot = this.pools.tiles.add(box.pos, q, _scale.set(w, thick, len), o.tint || (pitch < -2 * DEG ? TINT_RAMP : TINT_FLOOR));
+    const t = { box, start, end, dir, up, right, q, len, w, thick, pid: this.pid, slot: -1 };
+    t.slot = this.pools.tiles.add(box.pos, q, _scale.set(w, thick, len), o.tint || TINT_FLOOR);
     this.tiles.push(t);
 
     if (o.connect !== false) {
       for (const prev of this.lastEnds) {
-        if (Math.abs(prev.end.z - start.z) < 0.05 && Math.abs(prev.end.y - start.y) < 0.35) {
+        if (prev.end.distanceTo(start) < 0.05 + prev.w / 2 && Math.abs(prev.end.y - start.y) < 0.35 && Math.abs(prev.end.z - start.z) < 0.6) {
           prev.box.connectEnd = true;
           box.connectStart = true;
         }
@@ -137,9 +158,9 @@ export class Track {
     if (o.advance === false) {
       this.pending.push(t);
     } else {
-      this.center.push({ z: start.z, y: start.y, x: this.cur.x });
-      this.cur.y = end.y;
-      this.cur.z = end.z;
+      this.center.push({ z: start.z, y: start.y, x: start.x });
+      this.cur.copy(end);
+      if (o.xOff) this.cur.x -= o.xOff;
       this.center.push({ z: end.z, y: end.y, x: this.cur.x });
       this.lastEnds = [...this.pending, t];
       this.pending = [];
@@ -147,14 +168,16 @@ export class Track {
     return t;
   }
 
-  // Raw box relative to a tile frame (walls, halfpipe panels).
-  sideBox(t, lx, lz, sx, sy, sz, { roll = 0, tint = TINT_WALL, surface = false, bounce = 0.35, lift = 0 } = {}) {
+  // Raw box relative to a tile frame. surface:false boxes are solid (walls); hazard boxes live elsewhere.
+  sideBox(t, lx, lz, sx, sy, sz, { roll = 0, surface = false, bounce = 0.35, lift = 0, pool = 'tiles', collide = true } = {}) {
     const q = t.q.clone();
-    if (roll) q.multiply(_q.setFromAxisAngle(new THREE.Vector3(0, 0, 1), roll));
+    if (roll) q.multiply(_q.setFromAxisAngle(Z_AXIS, roll));
     const pos = t.start.clone().addScaledVector(t.right, lx).addScaledVector(t.dir, lz).addScaledVector(t.up, lift);
     const box = makeBox(pos, q, new THREE.Vector3(sx / 2, sy / 2, sz / 2), { surface, bounce });
-    const s = { box, start: pos, slot: this.pools.tiles.add(pos, q, _scale.set(sx, sy, sz), tint) };
-    this.tiles.push(s);
+    box.pid = t.pid;
+    const s = { box, start: pos, pid: t.pid, slot: this.pools[pool].add(pos, q, _scale.set(sx, sy, sz)), pool };
+    if (collide) this.tiles.push(s);
+    else this.towers.push(s);
     return s;
   }
 
@@ -165,6 +188,12 @@ export class Track {
     this.cur.x += shift;
     this.lastEnds = [];
     this.center.push({ z: from.z, y: from.y, x: from.x });
+    this.center.push({ z: this.cur.z, y: this.cur.y, x: this.cur.x });
+  }
+
+  drop(h) {
+    this.cur.y -= h;
+    this.lastEnds = [];
     this.center.push({ z: this.cur.z, y: this.cur.y, x: this.cur.x });
   }
 
@@ -197,13 +226,12 @@ export class Track {
 
   sign(t, lz, text, sub, color) {
     if (!this.showHints) return;
-    const key = text;
-    this.hintCount[key] = (this.hintCount[key] || 0) + 1;
-    if (this.hintCount[key] > 2) return;
+    this.hintCount[text] = (this.hintCount[text] || 0) + 1;
+    if (this.hintCount[text] > 2) return;
     const s = this.makeSign(text, sub, color);
     s.position.copy(t.start).addScaledVector(t.dir, lz).addScaledVector(t.up, 5.2);
     this.scene.add(s);
-    this.signs.push({ sprite: s, z: s.position.z });
+    this.signs.push({ sprite: s });
   }
 
   shield(t, lz) {
@@ -213,20 +241,88 @@ export class Track {
     this.pickups.push({ mesh: m, pos: m.position, type: 'shield', taken: false });
   }
 
+  // decorative wireframe building block (no collision)
+  tower(cx, cz, w, d, top, bottom) {
+    const h = top - bottom;
+    const pos = new THREE.Vector3(cx, bottom + h / 2, cz);
+    const slot = this.pools.towers.add(pos, _q.identity(), _scale.set(w, h, d));
+    this.towers.push({ box: { pos, min: new THREE.Vector3(0, 0, cz - d / 2), max: new THREE.Vector3(0, 0, cz + d / 2), half: new THREE.Vector3(w / 2, h / 2, d / 2), quat: new THREE.Quaternion() }, slot, pool: 'towers', start: pos });
+  }
+
+  // a stack of building columns underneath a platform, so platforms read as rooftops
+  buildingUnder(t, depth = 90) {
+    const n = Math.max(1, Math.round(t.len / 6));
+    for (let i = 0; i < n; i++) {
+      const a = (i + 1) / n;
+      const p = t.start.clone().addScaledVector(t.dir, t.len * a).addScaledVector(t.up, -t.thick);
+      const p0 = t.start.clone().addScaledVector(t.dir, (t.len * i) / n);
+      this.tower(p.x, (p.z + p0.z) / 2, t.w * 0.96, Math.abs(p.z - p0.z) + 0.02, p.y + 0.05, p.y - depth);
+    }
+  }
+
   // ------------------------------------------------------------------ generation
+  buildQueue() {
+    const k = this.genSection;
+    const n = k === 0 ? 1 : k === 1 ? 2 : k === 2 ? 3 : 4;
+    const q = [];
+    const choose = (list, tier) => {
+      let name;
+      do name = this.pick(list);
+      while (list.length > 1 && name === this.lastName);
+      // snakes (thin) stop appearing once the run is going (original: none after 50 points)
+      if (name === 'snake' && k > 2) name = this.pick(['treblocks', 'tunnel']);
+      if (this.plus && this.rng() < 0.3) name = this.pick(tier === 'early' ? ['jumpGap'] : tier === 'middle' ? ['jumpGap', 'hurdles'] : ['dashGate', 'hurdles']);
+      this.lastName = name;
+      q.push(name);
+    };
+    for (let i = 0; i < n; i++) choose(EARLY, 'early');
+    if (k >= 1) for (let i = 0; i < n; i++) choose(MIDDLE, 'middle');
+    if (k >= 2) for (let i = 0; i < n; i++) choose(LATE, 'late');
+    q.push('speedTunnel');
+    this.queue = q;
+  }
+
   update(ballZ) {
     let guard = 0;
-    while (this.cur.z > ballZ - 470 && guard++ < 20) this.nextPiece();
+    while (this.cur.z > ballZ - 480 && guard++ < 24) this.nextPiece();
+    this.buildCity(this.cur.z + 40);
     this.cull(ballZ + 45);
   }
 
-  cull(zLimit) {
-    const keep = [];
-    for (const t of this.tiles) {
-      if (t.box.min.z > zLimit) this.pools.tiles.remove(t.slot);
-      else keep.push(t);
+  // Background skyline: towers of wireframe cubes lining both sides of the descent.
+  buildCity(zLimit) {
+    while (this.cityZ > zLimit) {
+      const z = this.cityZ;
+      const ref = this.refAt(z);
+      for (const side of [-1, 1]) {
+        const w1 = this.rf(7, 13),
+          d1 = this.rf(7, 12);
+        const x1 = ref.x + side * (this.rf(17, 21) + w1 / 2);
+        this.tower(x1, z, w1, d1, ref.y + this.rf(-18, 34), ref.y - 160);
+        if (this.rng() < 0.75) {
+          const w2 = this.rf(9, 16),
+            d2 = this.rf(8, 14);
+          const x2 = ref.x + side * (this.rf(36, 60) + w2 / 2);
+          this.tower(x2, z + this.rf(-3, 3), w2, d2, ref.y + this.rf(0, 60), ref.y - 160);
+        }
+      }
+      this.cityZ -= this.rf(11, 15);
     }
-    this.tiles = keep;
+  }
+
+  cull(zLimit) {
+    const keepT = [];
+    for (const t of this.tiles) {
+      if (t.box.min.z > zLimit) this.pools[t.pool || 'tiles'].remove(t.slot);
+      else keepT.push(t);
+    }
+    this.tiles = keepT;
+    const keepW = [];
+    for (const t of this.towers) {
+      if (t.box.min.z > zLimit + 30) this.pools[t.pool || 'towers'].remove(t.slot);
+      else keepW.push(t);
+    }
+    this.towers = keepW;
     const hk = [];
     for (const h of this.hazards) {
       if (h.box.min.z > zLimit || !h.alive) {
@@ -255,10 +351,18 @@ export class Track {
       }
       return true;
     });
+    this.triggers = this.triggers.filter((t) => t.z < zLimit + 60 || !t.fired);
+    this.pads = this.pads.filter((p) => {
+      if (p.pos.z > zLimit) {
+        this.pools.pads.remove(p.slot);
+        return false;
+      }
+      return true;
+    });
     while (this.center.length > 4 && this.center[2].z > zLimit + 20) this.center.shift();
   }
 
-  // Reference track height (centre line) at a given z. Used for fall detection & camera.
+  // Reference track height / centre (centre line) at a given z. Used for fall detection & camera.
   refAt(z) {
     const c = this.center;
     for (let i = 0; i < c.length - 1; i++) {
@@ -274,338 +378,263 @@ export class Track {
   }
 
   nextPiece() {
-    const d = this.distAt(this.cur.z);
-    const D = clamp(d / 7000, 0, 1);
-    const v = speedAt(d);
-    this.D = D;
-    this.v = v;
-    this.pitch = clamp(this.pitch + this.rf(-3, 3), lerp(11, 15, D), lerp(15, 21, D));
-    this.W = clamp(lerp(10.5, 7.5, D) + this.rf(-1, 1.2), 6.5, 12);
+    if (!this.queue.length) this.buildQueue();
+    const name = this.queue.shift();
+    this.pitch = clamp(this.pitch + this.rf(-3, 3), 16, 24);
+    this.W = 10;
     this.pieces++;
-
-    const P = this.plus;
-    const table = [
-      ['straight', 1.6],
-      ['blocks', 3 + D],
-      ['slalom', 1.6],
-      ['movers', d > 500 ? 1 + 2 * D : 0],
-      ['narrow', 1 + D],
-      ['split', 1.3],
-      ['steps', 1.4],
-      ['offsetDrop', 1.4],
-      ['rampJump', 1.8],
-      ['banked', 1.4],
-      ['halfpipe', 1.0],
-      ['waves', 1.3],
-      ['tunnel', 1.0],
-      ['pillars', 1.3],
-      ['spinner', d > 900 ? 1 + D : 0],
-      ['jumpGap', P ? 2.4 : 0],
-      ['hurdles', P && d > 250 ? 1.8 : 0],
-      ['dashGate', P && d > 700 ? 1.4 : 0],
-    ];
-    let name = 'straight';
-    for (let tries = 0; tries < 8; tries++) {
-      let total = 0;
-      for (const [, w] of table) total += w;
-      let r = this.rng() * total;
-      for (const [n, w] of table) {
-        r -= w;
-        if (r <= 0) {
-          name = n;
-          break;
-        }
-      }
-      if (!this.recent.includes(name)) break;
-    }
-    this.recent.push(name);
-    if (this.recent.length > 2) this.recent.shift();
-
-    // short lead-in so pieces never butt directly into each other; after anything that can launch
-    // the ball, give a longer runway before the next gap so a big flight never skips the take-off
-    const launchers = ['rampJump', 'jumpGap', 'waves', 'steps', 'offsetDrop', 'halfpipe'];
-    const gappers = ['rampJump', 'jumpGap', 'offsetDrop', 'split', 'narrow', 'hurdles'];
-    let leadLen = this.rf(8, 14);
-    if (gappers.includes(name) && this.cur.z - leadLen > this.safeZ) leadLen = Math.min(this.cur.z - this.safeZ + 6, 90);
     const z0 = this.cur.z;
-    const lead = this.tile(leadLen);
-    if (name === 'straight' || this.rng() < 0.18) this.maybeGems(lead);
-    this['p_' + name](D, v, d);
-    // a ball launched by this piece may fly well past its end: keep the next gap out of that zone
-    if (launchers.includes(name)) this.safeZ = this.cur.z - v * 0.85;
-    if (this.log) this.log.push({ name, z0, z1: this.cur.z, d });
-  }
 
-  maybeGems(t) {
-    if (t.len < 10) return;
-    const hw = t.w / 2 - 1.2;
-    const x0 = this.rf(-hw, hw),
-      x1 = clamp(x0 + this.rf(-3, 3), -hw, hw);
-    this.gemLine(t, x0, x1, 3, t.len - 3, Math.max(3, Math.floor(t.len / 4)));
-  }
-
-  // Reserve a free lane that drifts slowly so obstacle rows are always passable.
-  laneRows(t, spacing, need, fn) {
-    const hw = t.w / 2;
-    let free = this.rf(-hw + need / 2, hw - need / 2);
-    for (let z = 10; z < t.len - 6; z += spacing) {
-      free = clamp(free + this.rf(-4.5, 4.5), -hw + need / 2, hw - need / 2);
-      fn(z, free, hw);
+    // connector between obstacles: a plain platform, a small step down onto the next rooftop,
+    // or a ramp that jumps the gap between two buildings
+    const gappers = ['tunnel', 'snake', 'straight', 'jumpGap', 'speedTunnel', 'hors'];
+    const r = this.rng();
+    if (this.pieces > 1 && r < 0.3 && this.cur.z < this.safeZ) this.buildingHop();
+    else {
+      if (this.pieces > 1 && r < 0.55) this.drop(this.rf(1, 2.2));
+      let len = this.rf(10, 18);
+      if (gappers.includes(name) && this.cur.z - len > this.safeZ) len = Math.min(this.cur.z - this.safeZ + 6, 150);
+      const t = this.tile(len);
+      if (this.rng() < 0.25) this.gemLine(t, 0, 0, 3, t.len - 3, 3);
     }
+
+    this['p_' + name]();
+    if (this.log) this.log.push({ name, z0, z1: this.cur.z, d: this.distAt(z0) });
   }
 
-  // ------------------------------------------------------------------ pieces
-  p_straight(D) {
-    const n = this.ri(1, 2);
-    for (let i = 0; i < n; i++) {
-      const t = this.tile(this.rf(18, 30));
-      this.maybeGems(t);
-      if (this.plus && D > 0.1 && this.distAt(t.end.z) - this.lastShieldDist > 1100 && this.rng() < 0.35) {
-        this.lastShieldDist = this.distAt(t.end.z);
-        this.shield(t, t.len * 0.6);
-      }
-    }
+  // Ramp off the end of a rooftop, fly the gap, land on a lower rooftop.
+  buildingHop() {
+    const v = this.v;
+    const pre = this.tile(this.rf(12, 18));
+    this.buildingUnder(pre);
+    const ang = this.rf(10, 15);
+    this.tile(3, { pitch: 0, join: true });
+    const ramp = this.tile(5, { pitch: -ang, join: true });
+    this.launch(ramp, ang, v, this.rf(4, 8));
   }
 
-  p_blocks(D, v) {
-    const t = this.tile(this.rf(50, 76));
-    const need = lerp(3.6, 3.0, D);
-    const spacing = Math.max(10, v * 0.38);
-    this.laneRows(t, spacing, need, (z, free, hw) => {
-      const n = this.ri(1, D > 0.45 ? 3 : 2);
-      for (let k = 0; k < n; k++) {
-        const s = this.rf(1.6, 2.4);
-        // choose the side of the free lane with room
-        const leftRoom = free - need / 2 - -hw,
-          rightRoom = hw - (free + need / 2);
-        let x;
-        if (leftRoom > s && (rightRoom <= s || this.rng() < 0.5)) x = this.rf(-hw + s / 2, free - need / 2 - s / 2);
-        else if (rightRoom > s) x = this.rf(free + need / 2 + s / 2, hw - s / 2);
-        else continue;
-        this.hazard(t, x, z + this.rf(-1.5, 1.5), s, s, s);
-      }
-    });
-  }
-
-  p_slalom(D, v) {
-    const spacing = Math.max(14, v * 0.5);
-    const n = this.ri(3, 5);
-    const t = this.tile(spacing * n + 16);
-    const bw = t.w * lerp(0.5, 0.6, D);
-    let side = this.rng() < 0.5 ? -1 : 1;
-    for (let i = 0; i < n; i++) {
-      this.hazard(t, side * (t.w / 2 - bw / 2), 12 + i * spacing, bw, 1.8, 1.2);
-      side = -side;
-    }
-  }
-
-  p_movers(D, v) {
-    const spacing = Math.max(14, v * 0.45);
-    const n = this.ri(2, 4);
-    const t = this.tile(spacing * n + 14);
-    const s = 2.2;
-    for (let i = 0; i < n; i++) {
-      this.hazard(t, 0, 12 + i * spacing, s, s, s, {
-        type: 'slide',
-        amp: t.w / 2 - s / 2 - 0.2,
-        freq: this.rf(0.3, 0.55) * (1 + D * 0.5),
-        phase: this.rf(0, Math.PI * 2),
-      });
-    }
-  }
-
-  p_narrow(D) {
-    const w = Math.max(3.4, this.rf(4.2, 5.4) - D * 1.2);
-    const shift = this.rf(-1, 1) * Math.min(this.W / 2 - w / 2, 2.5);
-    this.cur.x += shift;
-    const n = this.ri(1, 2);
-    for (let i = 0; i < n; i++) {
-      const t = this.tile(this.rf(18, 28), { w, pitch: this.pitch - 2 });
-      if (this.rng() < 0.6) this.gemLine(t, 0, 0, 3, t.len - 3, Math.floor(t.len / 5));
-    }
-    this.tile(10, { w: this.W + 1 });
-  }
-
-  p_split(D) {
-    const lane = lerp(4.2, 3.6, D),
-      voidW = 2.6;
-    const off = lane / 2 + voidW / 2;
-    this.tile(12, { w: lane * 2 + voidW });
-    const len = this.rf(38, 54);
-    const a = this.tile(len, { w: lane, xOff: -off, advance: false });
-    const b = this.tile(len, { w: lane, xOff: off });
-    const blocked = this.rng() < 0.5 ? a : b;
-    const other = blocked === a ? b : a;
-    this.hazard(blocked, 0, len * this.rf(0.45, 0.7), lane * 0.8, 1.8, 1.6);
-    if (this.plus && D > 0.4 && this.rng() < 0.5) this.hazard(other, 0, len * 0.2, lane * 0.8, 1.8, 1.6);
-    else this.gemLine(other, 0, 0, 4, len - 4, 5);
-    this.tile(14, { w: lane * 2 + voidW });
-  }
-
-  p_steps(D) {
-    const n = this.ri(3, 5);
-    for (let i = 0; i < n; i++) {
-      this.cur.y -= this.rf(1.4, 2.8);
-      if (this.rng() < 0.4) this.cur.x += this.rf(-1.5, 1.5);
-      this.lastEnds = [];
-      this.center.push({ z: this.cur.z, y: this.cur.y, x: this.cur.x });
-      this.tile(this.rf(10, 15), { pitch: this.rf(3, 9), w: this.W + this.rf(-0.5, 1.5) });
-    }
-    this.tile(8, { pitch: this.pitch - 2 });
-  }
-
-  p_offsetDrop(D) {
-    const G = this.rf(5, 9) + D * 2;
-    const H = this.rf(4, 7);
-    const wNew = this.W + 1.5;
-    const S = (this.rng() < 0.5 ? -1 : 1) * this.rf(0.5, 1.05) * (wNew / 2);
-    this.gap(G, H, S);
-    const t = this.tile(26, { w: wNew });
-    this.maybeGems(t);
-  }
-
-  p_rampJump(D, v) {
-    const ang = this.rf(12, 18);
-    const rw = Math.max(this.W, 8);
-    // gradual transition into the ramp so the crease doesn't feel like a wall
-    this.tile(3, { pitch: this.pitch * 0.5, w: rw });
-    this.tile(3, { pitch: 0, w: rw });
-    this.tile(3, { pitch: -ang * 0.5, w: rw });
-    const ramp = this.tile(7, { pitch: -ang, w: rw });
+  // Gap + landing rooftop after a ramp. Sized from the real flight so it's always makeable.
+  launch(ramp, ang, v, H, landW = 12) {
     const a = ang * DEG;
-    const H = this.rf(3, 7);
-    const G = Math.min(0.8 * flightDist(v * 0.7, a, H).d, 0.62 * flightDist(v * 0.88, a, H).d);
-    // gem arc along the expected flight
-    const f = flightDist(v * 0.88, a, H);
-    const vx = v * 0.88 * Math.cos(a),
-      vy = v * 0.88 * Math.sin(a);
-    for (let k = 1; k <= 5; k++) {
-      const tt = (f.t * k) / 6;
+    const G = Math.min(0.78 * flightDist(v * 0.72, a, H).d, 0.6 * flightDist(v * 0.9, a, H).d);
+    const f = flightDist(v * 0.9, a, H);
+    const vx = v * 0.9 * Math.cos(a),
+      vy = v * 0.9 * Math.sin(a);
+    for (let k = 1; k <= 4; k++) {
+      const tt = (f.t * k) / 5;
       this.gem(new THREE.Vector3(this.cur.x, ramp.end.y + BALL_R + vy * tt - 0.5 * GRAVITY * tt * tt, ramp.end.z - vx * tt));
     }
     this.gap(G, H);
+    const gapEnd = this.cur.z;
     const far = flightDist(v * 1.15, a, H).d;
-    this.tile(Math.max(30, far * 1.5 - G + 12), { w: this.W + 2 });
+    const land = this.tile(Math.max(28, far * 1.45 - G + 10), { w: landW });
+    this.buildingUnder(land);
+    // in Plus mode a jump off the ramp stacks on the launch: keep the next gap / thin piece out of reach
+    let reach = this.cur.z - v * 0.5;
+    if (this.plus) {
+      const vx2 = v * 1.15 * Math.cos(a),
+        vy2 = v * 1.15 * Math.sin(a) + JUMP_V;
+      const t2 = (vy2 + Math.sqrt(vy2 * vy2 + 2 * GRAVITY * H)) / GRAVITY;
+      reach = Math.min(reach, gapEnd - vx2 * t2 * 1.15);
+    }
+    this.safeZ = reach;
+    return land;
   }
 
-  p_banked(D) {
+  // ------------------------------------------------------------------ original obstacles
+  // RNG blocks: a single block dropped at a random spot on a short platform.
+  p_rng() {
+    const n = this.ri(1, 2);
+    for (let i = 0; i < n; i++) {
+      if (i > 0) this.drop(this.rf(0.8, 1.6));
+      const t = this.tile(this.rf(22, 28));
+      const s = 2.8;
+      this.hazard(t, this.rf(-t.w / 2 + s / 2, t.w / 2 - s / 2), t.len * this.rf(0.45, 0.65), s, s, s);
+    }
+  }
+
+  // Slants: a wide platform tilted to one side; steer up it or roll off the low edge.
+  p_slant() {
     const side = this.rng() < 0.5 ? -1 : 1;
     const maxRoll = this.rf(16, 22);
-    const steps = [maxRoll / 3, (maxRoll * 2) / 3];
-    for (const r of steps) this.tile(5, { roll: side * r });
-    const hold = this.tile(this.rf(22, 34), { roll: side * maxRoll });
-    if (D < 0.35) {
-      // gentle guard wall on the low side early on
-      const lowX = -side * (hold.w / 2 + 0.4);
-      this.sideBox(hold, lowX, hold.len / 2, 0.8, 2.8, hold.len, { lift: 0.6 });
-    } else if (this.rng() < 0.5) this.gemLine(hold, side * (hold.w / 2 - 1.3), side * (hold.w / 2 - 1.3), 4, hold.len - 4, 5);
-    for (const r of steps.reverse()) this.tile(5, { roll: side * r });
-    this.tile(8, { roll: 0 });
+    const w = 13;
+    for (const r of [maxRoll / 3, (maxRoll * 2) / 3]) this.tile(5, { roll: side * r, w, join: true });
+    const hold = this.tile(this.rf(36, 52), { roll: side * maxRoll, w, join: true });
+    if (this.rng() < 0.5) this.gemLine(hold, side * (w / 2 - 1.5), side * (w / 2 - 1.5), 4, hold.len - 4, 5);
+    for (const r of [(maxRoll * 2) / 3, maxRoll / 3]) this.tile(5, { roll: side * r, w, join: true });
+    this.tile(6, { roll: 0, w: 11, join: true });
   }
 
-  p_halfpipe(D) {
-    const fw = 5.5,
-      pw = 5.2,
-      ang = 52 * DEG;
-    const len = this.rf(50, 66);
-    const t = this.tile(len, { w: fw });
-    for (const s of [-1, 1]) {
-      const lx = s * (fw / 2 + Math.cos(ang) * (pw / 2));
-      const panel = this.sideBox(t, lx, len / 2, pw, 1.2, len, { roll: s * ang, tint: TINT_PANEL, surface: true, bounce: 0, lift: Math.sin(ang) * (pw / 2) });
-      // sideBox positions the box centre at the top-face centre; drop it by half its thickness along its own up
-      const up = new THREE.Vector3(0, 1, 0).applyQuaternion(panel.box.quat);
-      panel.box.pos.addScaledVector(up, -0.6);
-      setBoxTransform(panel.box, panel.box.pos);
-      this.pools.tiles.set(panel.slot, panel.box.pos, panel.box.quat, _scale.set(pw, 1.2, len));
-      // guard lip on the rim so hard steering at high speed can't launch the ball out of the pipe
-      const rimX = s * (fw / 2 + Math.cos(ang) * pw);
-      this.sideBox(t, rimX + s * 0.3, len / 2, 0.6, 2.4, len, { lift: Math.sin(ang) * pw + 0.5, bounce: 0.2 });
+  // Straights: short, thin platforms — centre the ball and it rolls through on its own.
+  p_straight() {
+    const n = this.ri(2, 3);
+    const w = this.rf(3.6, 4.4);
+    for (let i = 0; i < n; i++) {
+      if (i > 0) this.drop(this.rf(0.6, 1.4));
+      const t = this.tile(this.rf(20, 30), { w });
+      if (this.rng() < 0.4) this.gemLine(t, 0, 0, 4, t.len - 4, 3);
     }
-    if (D > 0.25 || this.plus) {
-      const n = this.ri(1, 2);
-      for (let i = 0; i < n; i++) this.hazard(t, 0, len * (0.35 + i * 0.35), fw * 0.7, 1.6, 1.4);
-    } else this.gemLine(t, 0, 0, 5, len - 5, 6);
-    this.tile(20, { w: 12.5 });
   }
 
-  p_waves(D) {
-    const n = this.ri(4, 6);
-    for (let i = 0; i < n; i++) this.tile(this.rf(7, 10), { pitch: i % 2 === 0 ? this.pitch + 9 : this.pitch - 13 });
-    this.tile(10);
+  // Treblocks: a pair of blocks on the edges, then a big block in the middle, then another pair further on.
+  p_treblocks() {
+    const w = 11,
+      hw = w / 2;
+    const t = this.tile(76, { w });
+    const s = 3;
+    for (const x of [-hw + s / 2, hw - s / 2]) this.hazard(t, x, 16, s, s, s);
+    this.hazard(t, 0, 30, 4.4, s, s);
+    for (const x of [-hw + s / 2, hw - s / 2]) this.hazard(t, x, 58, s, s, s);
   }
 
-  p_tunnel(D, v) {
-    const len = this.rf(55, 75);
-    const t = this.tile(len);
-    for (const s of [-1, 1]) this.sideBox(t, s * (t.w / 2 + 0.4), len / 2, 0.8, 3, len, { lift: 0.7 });
-    if (D > 0.2) {
-      const spacing = Math.max(14, v * 0.45);
-      for (let z = 14; z < len - 8; z += spacing) this.hazard(t, this.rf(-t.w / 2 + 1.5, t.w / 2 - 1.5), z, 2, 2, 2);
-    } else this.gemLine(t, -t.w / 2 + 1.5, t.w / 2 - 1.5, 5, len - 5, 7);
+  // Tunnels: roll straight through a narrow tunnel with red walls, out onto a ramp.
+  // The roof is a (safer) path too.
+  p_tunnel() {
+    const v = this.v;
+    const fw = 5.4,
+      wallT = 1.2,
+      wallH = 4.4,
+      len = this.rf(44, 56);
+    this.tile(12, { w: 9 });
+    const floor = this.tile(len, { w: fw });
+    for (const s of [-1, 1]) this.hazard(floor, s * (fw / 2 + wallT / 2), len / 2, wallT, wallH, len);
+    // roof slab on top of the walls (walkable)
+    const roofW = fw + wallT * 2;
+    const roof = this.sideBox(floor, 0, len / 2, roofW, 1, len, { surface: true, lift: wallH + 0.5, bounce: 0 });
+    roof.box.pid = floor.pid;
+    this.buildingUnder(floor, 60);
+    const ang = this.rf(11, 15);
+    this.tile(3, { pitch: 0, w: fw, join: true });
+    const ramp = this.tile(5, { pitch: -ang, w: fw, join: true });
+    this.launch(ramp, ang, v, this.rf(4, 7));
   }
 
-  p_pillars(D, v) {
-    const t = this.tile(this.rf(60, 80), { w: this.W + 4 });
-    const need = lerp(3.8, 3.1, D);
-    this.laneRows(t, Math.max(9, v * 0.32), need, (z, free, hw) => {
-      const n = this.ri(1, 2);
-      for (let k = 0; k < n; k++) {
-        const s = 1.5;
-        const leftRoom = free - need / 2 + hw,
-          rightRoom = hw - (free + need / 2);
-        let x;
-        if (leftRoom > s && (rightRoom <= s || this.rng() < 0.5)) x = this.rf(-hw + s / 2, free - need / 2 - s / 2);
-        else if (rightRoom > s) x = this.rf(free + need / 2 + s / 2, hw - s / 2);
-        else continue;
-        this.hazard(t, x, z, s, 7, s);
-      }
-    });
+  // Snakes: long, narrow and curvy, with a ramp at the end.
+  p_snake() {
+    const v = this.v;
+    const w = 3.6;
+    const A = this.rf(3, 4.5),
+      lambda = this.rf(62, 80),
+      total = this.rf(72, 92),
+      seg = 3;
+    const phase = this.rng() < 0.5 ? 0 : Math.PI;
+    this.tile(8, { w: 8 });
+    let first = true;
+    for (let s = 0; s < total; s += seg) {
+      const slope = ((A * 2 * Math.PI) / lambda) * Math.cos((2 * Math.PI * (s + seg / 2)) / lambda + phase);
+      const t = this.tile(seg, { w, yaw: Math.atan(slope) / DEG, join: !first });
+      first = false;
+      if (Math.floor(s / seg) % 4 === 2 && this.rng() < 0.5) this.gem(t.start.clone().addScaledVector(t.up, 1.25));
+    }
+    const ang = this.rf(10, 14);
+    this.tile(3, { pitch: this.pitch * 0.4, w: 5, join: true });
+    this.tile(3, { pitch: 0, w: 5, join: true });
+    const ramp = this.tile(5, { pitch: -ang, w: 5, join: true });
+    this.launch(ramp, ang, v, this.rf(4, 7));
   }
 
-  p_spinner(D) {
-    const t = this.tile(36);
-    const dirn = this.rng() < 0.5 ? -1 : 1;
-    this.hazard(t, 0, 18, t.w * 0.92, 0.9, 0.9, { type: 'spin', speed: dirn * this.rf(1.1, 1.9) * (1 + D * 0.4) * (this.plus ? 1 : 0.85), phase: this.rf(0, Math.PI) }, TINT_SPIN, 0.2);
-    this.tile(8);
+  // Hors: big blocks sliding side to side across short platforms, each out of sync.
+  p_hors() {
+    const n = this.ri(3, 4);
+    for (let i = 0; i < n; i++) {
+      if (i > 0) this.drop(this.rf(0.8, 1.5));
+      const t = this.tile(this.rf(18, 22));
+      const bw = t.w * 0.36;
+      this.hazard(t, 0, t.len * 0.55, bw, 2.8, 2.6, { type: 'hor', amp: t.w / 2 - bw / 2, cross: 3, phase: this.rf(0, 6) });
+    }
   }
 
-  // ---- Plus-mode pieces (need jump / dash)
-  p_jumpGap(D, v) {
+  // Verts: three side-by-side blocks rising and falling (2s up, 2s down), staggered by 3s.
+  p_verts() {
+    const n = this.ri(1, 2);
+    for (let i = 0; i < n; i++) {
+      if (i > 0) this.drop(this.rf(0.8, 1.5));
+      const t = this.tile(this.rf(34, 42));
+      const bw = t.w / 3;
+      const base = this.rf(0, 4);
+      [-1, 0, 1].forEach((k, j) => this.hazard(t, k * bw, t.len * 0.55, bw - 0.05, 3, 3, { type: 'vert', lift: 4.2, phase: base + j * 3 }));
+    }
+  }
+
+  // Speed tunnel: a building with a short round tunnel through it; the pad inside kicks the speed up
+  // a lot, and a ramp at the far end launches you into the next section.
+  p_speedTunnel() {
+    const v = sectionSpeed(this.genSection + 1) + 1.5;
+    const fw = 8,
+      R = 5,
+      cy = 3,
+      len = 30;
+    this.tile(14, { w: fw });
+    const floor = this.tile(len, { w: fw, join: true });
+    // tube panels on the arc above the floor: circle centre is cy above the floor, and the circle
+    // meets the floor exactly at its edges (R² = cy² + (fw/2)²)
+    const n = 16;
+    const a0 = Math.asin(-cy / R);
+    const span = Math.PI - 2 * a0;
+    const pw = 2 * R * Math.sin(span / (2 * n)) * 1.08;
+    for (let i = 0; i < n; i++) {
+      const aa = a0 + (span * (i + 0.5)) / n;
+      const panel = this.sideBox(floor, R * Math.cos(aa), len / 2, pw, 0.6, len, { roll: aa + Math.PI / 2, surface: true, bounce: 0, lift: cy + R * Math.sin(aa) });
+      // the box's inner (top) face should sit on the circle: move it outward by half its thickness
+      const up = new THREE.Vector3(0, 1, 0).applyQuaternion(panel.box.quat);
+      panel.box.pos.addScaledVector(up, -0.3);
+      setBoxTransform(panel.box, panel.box.pos);
+      this.pools.tiles.set(panel.slot, panel.box.pos, panel.box.quat, _scale.set(pw, 0.6, len));
+    }
+    // the building the tunnel runs through (world-aligned, decorative)
+    const mid = floor.start.clone().addScaledVector(floor.dir, len / 2);
+    const depth = len * Math.cos(this.pitch * DEG);
+    const roofY = floor.start.y + cy + R + 0.8;
+    const topY = roofY + this.rf(8, 22);
+    for (const s of [-1, 1]) this.tower(mid.x + s * (R + 4.6), mid.z, 7.6, depth, topY, floor.end.y - 80);
+    this.tower(mid.x, mid.z, 2 * R + 1.6, depth, topY, roofY);
+    // speed pad
+    const padPos = floor.start.clone().addScaledVector(floor.dir, 9).addScaledVector(floor.up, 0.04);
+    this.pads.push({ pos: padPos, q: floor.q.clone(), slot: this.pools.pads.add(padPos, floor.q, _scale.set(fw * 0.7, 1, 6)) });
+    this.triggers.push({ z: padPos.z, type: 'speed', fired: false, section: this.genSection + 1 });
+    this.genSection++;
+    // exit ramp and jump into the next section
+    const ang = 13;
+    this.tile(3, { pitch: 0, w: fw, join: true });
+    const ramp = this.tile(5, { pitch: -ang, w: fw, join: true });
+    this.launch(ramp, ang, v, this.rf(4, 7), 12);
+  }
+
+  // ------------------------------------------------------------------ Plus-mode extras (need jump / dash)
+  p_jumpGap() {
+    const v = this.v;
     const run = this.tile(Math.max(22, v * 0.75));
     this.sign(run, 4, 'JUMP!', 'SPACE / W / ↑', '#39ff88');
-    // Size the gap so that, anywhere in the plausible speed range, a jump clears it and rolling off doesn't.
     const th = this.pitch * DEG;
     const G = clamp(v * 0.38, 9, 21);
     let yNoMax = -Infinity,
       yJumpMin = Infinity;
     for (const k of [0.8, 0.9, 1, 1.1]) {
       const t = G / (v * k);
-      yNoMax = Math.max(yNoMax, -G * Math.tan(th) - 0.5 * GRAVITY * t * t);
-      yJumpMin = Math.min(yJumpMin, JUMP_V * t - 0.5 * GRAVITY * t * t);
+      const base = -G * Math.tan(th) - 0.5 * GRAVITY * t * t; // rolling straight off the edge
+      yNoMax = Math.max(yNoMax, base);
+      yJumpMin = Math.min(yJumpMin, base + JUMP_V * t); // jump adds JUMP_V on top of the slope's own descent
     }
     const yLand = yNoMax + 0.4 * (yJumpMin - yNoMax);
-    const shift = D > 0.4 && this.rng() < 0.4 ? this.rf(-2, 2) : 0;
-
-    this.gap(G, -yLand, shift);
+    this.gap(G, -yLand, 0);
     const land = this.tile(Math.max(30, v * 0.6), { w: this.W + 1 });
-    if (this.rng() < 0.5) this.gemLine(land, 0, 0, 6, 20, 4);
+    this.buildingUnder(land);
+    this.safeZ = this.cur.z - v * 0.8;
   }
 
-  p_hurdles(D, v) {
+  p_hurdles() {
+    const v = this.v;
     const spacing = Math.max(26, v * 0.95 + 6);
-    const n = this.ri(2, 3 + Math.round(D));
+    const n = this.ri(2, 3);
     const t = this.tile(spacing * n + 14);
     this.sign(t, 0, 'HURDLES', 'JUMP OVER THEM', '#39ff88');
     for (let i = 0; i < n; i++) this.hazard(t, 0, 16 + i * spacing, t.w + 0.2, 1.1, 0.8);
   }
 
-  p_dashGate(D, v) {
-    const lead = 34;
-    const n = D > 0.5 && this.rng() < 0.5 ? 2 : 1;
-    const spacing = Math.max(v * 2.4, 60);
-    const t = this.tile(lead + (n - 1) * spacing + 20);
+  p_dashGate() {
+    const t = this.tile(56);
     this.sign(t, 6, 'DASH!', 'SHIFT / S / ↓ to phase', '#ff4fd8');
-    for (let i = 0; i < n; i++) this.hazard(t, 0, lead + i * spacing, t.w + 0.6, 6.5, 0.7, { gate: true }, TINT_GATE);
+    this.hazard(t, 0, 34, t.w + 0.6, 6.5, 0.7, { gate: true }, TINT_GATE);
   }
 
   // ------------------------------------------------------------------ runtime
@@ -613,15 +642,19 @@ export class Track {
     for (const h of this.hazards) {
       const m = h.motion;
       if (!m || !h.alive || m.gate) continue;
-      if (m.type === 'slide') {
-        _v.copy(h.base).addScaledVector(h.right, Math.sin(time * m.freq * Math.PI * 2 + m.phase) * m.amp);
+      if (m.type === 'hor') {
+        // triangle wave: 3s to cross from one edge to the other
+        const p = ((time + m.phase) / m.cross) % 2;
+        const k = p < 1 ? p : 2 - p;
+        _v.copy(h.base).addScaledVector(h.right, (k * 2 - 1) * m.amp);
         setBoxTransform(h.box, _v);
         this.pools.hazards.set(h.slot, _v, h.baseQuat, h.scale);
-      } else if (m.type === 'spin') {
-        _q.setFromAxisAngle(_v.set(0, 1, 0), time * m.speed + m.phase);
-        const q = h.baseQuat.clone().multiply(_q);
-        setBoxTransform(h.box, h.base, q);
-        this.pools.hazards.set(h.slot, h.base, q, h.scale);
+      } else if (m.type === 'vert') {
+        const p = (((time + m.phase) % 4) + 4) % 4;
+        const lift = m.lift * 0.5 * (1 - Math.cos((p / 4) * Math.PI * 2));
+        _v.copy(h.base).addScaledVector(h.up, lift);
+        setBoxTransform(h.box, _v);
+        this.pools.hazards.set(h.slot, _v, h.baseQuat, h.scale);
       }
     }
   }
@@ -638,12 +671,18 @@ export class Track {
 
   // Floating origin: shift everything so coordinates stay small on very long runs.
   shift(o) {
-    for (const t of this.tiles) {
-      t.box.pos.add(o);
-      setBoxTransform(t.box, t.box.pos);
-      t.start.add(o);
-      if (t.end) t.end.add(o);
-      this.pools.tiles.set(t.slot, t.box.pos, t.box.quat, _scale.set(t.box.half.x * 2, t.box.half.y * 2, t.box.half.z * 2));
+    for (const list of [this.tiles, this.towers]) {
+      for (const t of list) {
+        t.box.pos.add(o);
+        if (t.box.invQuat) setBoxTransform(t.box, t.box.pos);
+        else {
+          t.box.min.z += o.z;
+          t.box.max.z += o.z;
+        }
+        if (t.start !== t.box.pos) t.start.add(o);
+        if (t.end) t.end.add(o);
+        this.pools[t.pool || 'tiles'].set(t.slot, t.box.pos, t.box.quat, _scale.set(t.box.half.x * 2, t.box.half.y * 2, t.box.half.z * 2));
+      }
     }
     for (const h of this.hazards) {
       h.base.add(o);
@@ -651,17 +690,22 @@ export class Track {
       setBoxTransform(h.box, h.box.pos);
       this.pools.hazards.set(h.slot, h.box.pos, h.box.quat, h.scale);
     }
+    for (const p of this.pads) {
+      p.pos.add(o);
+      this.pools.pads.set(p.slot, p.pos, p.q, _scale.set(5.6, 1, 6));
+    }
     for (const g of this.gems) g.pos.add(o);
     for (const p of this.pickups) p.pos.add(o);
     for (const s of this.signs) s.sprite.position.add(o);
+    for (const t of this.triggers) t.z += o.z;
     for (const c of this.center) {
       c.x += o.x;
       c.y += o.y;
       c.z += o.z;
     }
-    // lastEnds entries are tiles already shifted above (end vectors shared)
     this.cur.add(o);
     this.safeZ += o.z;
+    this.cityZ += o.z;
     this.distBase += o.z;
   }
 }

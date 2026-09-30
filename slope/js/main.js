@@ -1,10 +1,10 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
-import { Track, speedAt, GRAVITY, BALL_R } from './track.js';
+import { Track, sectionSpeed, GRAVITY, BALL_R } from './track.js';
 import { sphereTouchesBox, boundsOverlapSphere, topHeightBelow } from './physics.js';
 import { createBall, stepController, COYOTE, JUMP_BUFFER, DASH_CD, PHASE_TIME } from './ball.js';
-import { InstancedPool, createTileMaterial, createHazardMaterial, Background, Particles, Shards, LandingMarker, makeSign } from './render.js';
+import { InstancedPool, createTileMaterial, createHazardMaterial, createTowerMaterial, createPadMaterial, Background, Trail, Particles, Shards, LandingMarker, makeSign } from './render.js';
 import { GameAudio } from './audio.js';
 import { SKINS, skinTexture, skinMaterialParams, skinPreview } from './skins.js';
 import { loadSave, writeSave, resetSave } from './storage.js';
@@ -14,17 +14,16 @@ const $ = (id) => document.getElementById(id);
 
 // ============================================================================ constants
 const STEP = 1 / 120;
-const SCORE_DIV = 3;
-const LEVEL_EVERY = 300;
 
+// one colour per section, like the original's colour changes
 const THEMES = [
-  { neon: '#3ee07a', fill: '#050807', horizon: '#0b1510', ui: '62, 224, 122' },
-  { neon: '#35c8e8', fill: '#04070a', horizon: '#0a1319', ui: '53, 200, 232' },
-  { neon: '#a77ef0', fill: '#06050a', horizon: '#120e1c', ui: '167, 126, 240' },
-  { neon: '#f0a830', fill: '#080604', horizon: '#1a140a', ui: '240, 168, 48' },
-  { neon: '#5b8cf0', fill: '#04050a', horizon: '#0c1020', ui: '91, 140, 240' },
-  { neon: '#d4e04a', fill: '#070804', horizon: '#15170a', ui: '212, 224, 74' },
-  { neon: '#e6e6e6', fill: '#060606', horizon: '#141414', ui: '230, 230, 230' },
+  { neon: '#1eff3c', ui: '30, 255, 60' },
+  { neon: '#1ee4ff', ui: '30, 228, 255' },
+  { neon: '#ffe01e', ui: '255, 224, 30' },
+  { neon: '#ff3cf0', ui: '255, 60, 240' },
+  { neon: '#ff8c1e', ui: '255, 140, 30' },
+  { neon: '#4a78ff', ui: '74, 120, 255' },
+  { neon: '#f2f2f2', ui: '242, 242, 242' },
 ];
 
 // ============================================================================ save / settings
@@ -43,7 +42,7 @@ try {
   fatal('WebGL is not available on this device/browser. ' + (e && e.message ? e.message : ''));
   throw e;
 }
-renderer.setClearColor(0x02020a, 1);
+renderer.setClearColor(0x000000, 1);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 
 const scene = new THREE.Scene();
@@ -83,20 +82,23 @@ addEventListener('resize', () => {
 });
 
 // ============================================================================ world objects
-const fogColor = new THREE.Color('#050806');
+const fogColor = new THREE.Color('#000000');
 const tileMat = createTileMaterial(fogColor);
+const towerMat = createTowerMaterial(fogColor, tileMat);
 const hazardMat = createHazardMaterial(fogColor);
 const unitBox = new THREE.BoxGeometry(1, 1, 1);
 const pools = {
   tiles: new InstancedPool(unitBox, tileMat, 1100),
   hazards: new InstancedPool(unitBox, hazardMat, 500),
+  towers: new InstancedPool(unitBox, towerMat, 1200),
+  pads: new InstancedPool(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), createPadMaterial(), 16),
   gems: new InstancedPool(
     new THREE.OctahedronGeometry(0.55, 0),
     new THREE.MeshStandardMaterial({ color: '#7fe6ff', emissive: '#0b6f8a', emissiveIntensity: 0.6, metalness: 0.3, roughness: 0.3, flatShading: true }),
     300
   ),
 };
-scene.add(pools.tiles.mesh, pools.hazards.mesh, pools.gems.mesh);
+scene.add(pools.tiles.mesh, pools.hazards.mesh, pools.gems.mesh, pools.towers.mesh, pools.pads.mesh);
 
 function makeShieldPickup() {
   const g = new THREE.Group();
@@ -109,6 +111,7 @@ function makeShieldPickup() {
 
 const track = new Track(scene, pools, makeSign, makeShieldPickup);
 const bg = new Background(scene, quality);
+const trail = new Trail(scene);
 const particles = new Particles(scene);
 const shards = new Shards(scene);
 const marker = new LandingMarker(scene);
@@ -133,58 +136,50 @@ const bubble = new THREE.Mesh(
 bubble.visible = false;
 scene.add(bubble);
 
+let classicBall = false;
 function applySkin(id) {
   if (!SKINS.some((k) => k.id === id)) id = save.skin = 'classic';
   const p = skinMaterialParams(id);
   const tex = skinTexture(id);
-  ballMat.map = tex;
+  classicBall = id === 'classic';
+  ballMat.map = classicBall ? null : tex;
+  ballMat.color.set(classicBall ? '#000000' : '#ffffff');
   ballMat.emissiveMap = tex;
-  ballMat.emissive.set('#ffffff');
+  ballMat.emissive.set(classicBall ? theme.neon : '#ffffff');
   ballMat.emissiveIntensity = p.emissiveIntensity;
   ballMat.metalness = p.metalness;
   ballMat.roughness = p.roughness;
   ballMat.needsUpdate = true;
 }
-applySkin(save.skin);
 
 // ============================================================================ theme
 const theme = {
   neon: new THREE.Color(THEMES[0].neon),
-  fill: new THREE.Color(THEMES[0].fill),
-  horizon: new THREE.Color(THEMES[0].horizon),
   target: 0,
 };
-const _tn = new THREE.Color(),
-  _tf = new THREE.Color(),
-  _th = new THREE.Color();
+const _tn = new THREE.Color();
 function setThemeInstant(i) {
-  const t = THEMES[i % THEMES.length];
   theme.target = i;
-  theme.neon.set(t.neon);
-  theme.fill.set(t.fill);
-  theme.horizon.set(t.horizon);
+  theme.neon.set(THEMES[i % THEMES.length].neon);
   pushTheme();
 }
 function pushTheme() {
   tileMat.uniforms.uColor.value.copy(theme.neon);
-  tileMat.uniforms.uFill.value.copy(theme.fill);
-  fogColor.copy(theme.horizon).multiplyScalar(0.6);
-  bg.setTheme(theme.horizon);
-  renderer.setClearColor(fogColor);
+  trail.mat.uniforms.uColor.value.copy(theme.neon);
+  if (classicBall) ballMat.emissive.copy(theme.neon);
 }
 function updateTheme(dt) {
-  const t = THEMES[theme.target % THEMES.length];
-  const k = 1 - Math.exp(-dt * 2.2);
-  theme.neon.lerp(_tn.set(t.neon), k);
-  theme.fill.lerp(_tf.set(t.fill), k);
-  theme.horizon.lerp(_th.set(t.horizon), k);
+  const k = 1 - Math.exp(-dt * 3);
+  theme.neon.lerp(_tn.set(THEMES[theme.target % THEMES.length].neon), k);
   pushTheme();
 }
 function setUiTheme(i) {
   document.documentElement.style.setProperty('--neon', THEMES[i % THEMES.length].neon);
   document.documentElement.style.setProperty('--neon-rgb', THEMES[i % THEMES.length].ui);
+  if (typeof hudCache !== 'undefined') hudCache.score = -1;
 }
 setThemeInstant(0);
+applySkin(save.skin);
 
 // ============================================================================ audio
 const audio = new GameAudio();
@@ -404,7 +399,10 @@ function resetWorld() {
   S.distance = 0;
   S.score = 0;
   S.gems = 0;
-  S.level = 0;
+  S.section = 0;
+  S.lastPid = 0;
+  S.sectionStart = 0;
+  trail.reset();
   S.deadTimer = 0;
   S.slowmo = 1;
   S.shake = 0;
@@ -465,7 +463,6 @@ function toMenu() {
 function die(cause) {
   if (!ball.alive) return;
   ball.alive = false;
-  S.score = Math.floor(S.distance / SCORE_DIV);
   S.state = 'dead';
   touchEl.classList.remove('show');
   touches.clear();
@@ -521,11 +518,29 @@ function stepBall(h) {
   const plus = S.mode === 'plus';
   const ctl = input.ctl;
   ctl.steer = readSteer() * settings.sensitivity;
-  ctl.target = speedAt(S.distance);
+  ctl.target = sectionSpeed(S.section) + Math.min((S.distance - S.sectionStart) * 0.003, 3);
   ctl.plus = plus;
   ctl.jumpQueued = input.jumpQueued;
   ctl.dashQueued = input.dashQueued;
-  const { grounded, wasGrounded, impact, wall, jumped, dashed, fwd } = stepController(b, h, ctl, track.tiles);
+  const { grounded, groundBox, wasGrounded, impact, wall, jumped, dashed, fwd } = stepController(b, h, ctl, track.tiles);
+  // score = platforms reached (like the original): +1 the first time the ball lands on a new one
+  if (grounded && groundBox && groundBox.pid > S.lastPid) {
+    S.lastPid = groundBox.pid;
+    S.score++;
+  }
+  // speed tunnel pads
+  for (const tr of track.triggers) {
+    if (tr.fired || b.pos.z > tr.z) continue;
+    tr.fired = true;
+    S.section = tr.section;
+    S.sectionStart = S.distance;
+    theme.target = S.section;
+    setUiTheme(S.section);
+    audio.intensity = S.section;
+    audio.play('level');
+    banner('SPEED UP');
+    S.fovKick = 10;
+  }
   input.jumpQueued = ctl.jumpQueued;
   input.dashQueued = ctl.dashQueued;
   if (jumped) {
@@ -627,6 +642,7 @@ function maybeRecenter() {
   camLook.add(o);
   particles.shift(o);
   shards.shift(o);
+  trail.shift(o);
 }
 
 // ============================================================================ camera & visuals
@@ -662,18 +678,21 @@ function updateCamera(dt) {
   }
   const speed = Math.max(-ball.vel.z, 0);
   const ref = track.refAt(p.z);
+  const refAhead = track.refAt(p.z - 16);
   if (S.state !== 'dead' || S.cause === 'crash') {
-    const back = 9.6 + speed * 0.03;
-    const up = 4.0 + speed * 0.014;
+    // low and close behind the ball, like the original
+    const back = 5.6 + speed * 0.02;
+    const up = 2.3 + speed * 0.008;
     // follow the ball, but blend towards the track line so jumps / falls don't yank the view
-    const baseY = S.state === 'dead' ? camera.position.y - up : Math.max(p.y, ref.y + BALL_R - 1.5) * 0.8 + (ref.y + BALL_R) * 0.2;
-    _desired.set(THREE.MathUtils.lerp(p.x, ref.x, 0.15), baseY + up, p.z + back);
-    camera.position.x = damp(camera.position.x, _desired.x, 6, dt);
-    camera.position.y = damp(camera.position.y, _desired.y, 7, dt);
+    const baseY = S.state === 'dead' ? camera.position.y - up : Math.max(p.y, ref.y + BALL_R - 1.5) * 0.75 + (ref.y + BALL_R) * 0.25;
+    _desired.set(THREE.MathUtils.lerp(p.x, ref.x, 0.1), baseY + up, p.z + back);
+    camera.position.x = damp(camera.position.x, _desired.x, 7, dt);
+    camera.position.y = damp(camera.position.y, _desired.y, 8, dt);
     if (S.state === 'dead') camera.position.z = damp(camera.position.z, _desired.z + 4, 1.5, dt);
     else camera.position.z = _desired.z;
-    const lookY = p.y * 0.8 + (ref.y + BALL_R) * 0.2 - 2.4;
-    camLook.set(THREE.MathUtils.lerp(p.x, camera.position.x, 0.25), lookY, p.z - 14);
+    // look down the slope: aim at the track a little ahead so the descent stays in view
+    const lookY = Math.min(p.y - 0.4, refAhead.y + BALL_R + 0.6);
+    camLook.set(THREE.MathUtils.lerp(p.x, refAhead.x, 0.3), damp(camLook.y, lookY, 10, dt), p.z - 16);
   } else {
     // falling: stop following forward, keep watching the ball drop away
     camLook.lerp(p, 1 - Math.exp(-4 * dt));
@@ -689,7 +708,7 @@ function updateCamera(dt) {
     S.shake = Math.max(0, S.shake - dt * 2.2);
   }
   S.fovKick = damp(S.fovKick, 0, 4, dt);
-  const fov = 66 + THREE.MathUtils.clamp((speed - 26) * 0.32, 0, 16) + S.fovKick;
+  const fov = 64 + THREE.MathUtils.clamp((speed - 24) * 0.28, 0, 16) + S.fovKick;
   camera.fov = damp(camera.fov, fitFov(fov), 5, dt);
   camera.updateProjectionMatrix();
 }
@@ -707,6 +726,9 @@ function updateVisuals(dt) {
   bubble.visible = ball.shield && ball.alive;
   bubble.position.copy(renderPos);
   bubble.material.uniforms.uTime.value = S.time;
+
+  if (ball.alive && S.state !== 'menu') trail.update(_tmp.copy(renderPos).addScaledVector(ball.groundN, -BALL_R + 0.03), ball.groundN, ball.grounded);
+  trail.mesh.visible = S.state !== 'menu';
 
   // contact shadow under the ball (doubles as a landing guide in the air)
   if (ball.alive && S.state !== 'dead') {
@@ -775,9 +797,12 @@ function setRing(id, p, ready) {
 }
 function flashAbility() {}
 function updateHud() {
-  setText('hud-score', String(S.score));
+  if (hudCache.score !== S.score) {
+    hudCache.score = S.score;
+    drawDotScore($('hud-score'), S.score);
+  }
   setText('hud-speed', String(Math.round(Math.max(-ball.vel.z, 0) * 3.6)));
-  setText('hud-level', 'LEVEL ' + (S.level + 1));
+  setText('hud-level', 'SECTION ' + (S.section + 1));
   const gemsEl = $('hud-gems').querySelector('b');
   if (hudCache.gems !== S.gems) {
     hudCache.gems = S.gems;
@@ -801,6 +826,51 @@ function updateHud() {
   if (S.score > S.bestAtStart && S.bestAtStart > 0 && !hudCache.bestBeaten) {
     hudCache.bestBeaten = true;
     toast('NEW BEST!');
+  }
+}
+
+// Dot-matrix score like the original's LED digits
+const DIGITS = {
+  0: ['01110', '10001', '10011', '10101', '11001', '10001', '01110'],
+  1: ['00100', '01100', '00100', '00100', '00100', '00100', '01110'],
+  2: ['01110', '10001', '00001', '00010', '00100', '01000', '11111'],
+  3: ['11111', '00010', '00100', '00010', '00001', '10001', '01110'],
+  4: ['00010', '00110', '01010', '10010', '11111', '00010', '00010'],
+  5: ['11111', '10000', '11110', '00001', '00001', '10001', '01110'],
+  6: ['00110', '01000', '10000', '11110', '10001', '10001', '01110'],
+  7: ['11111', '00001', '00010', '00100', '01000', '01000', '01000'],
+  8: ['01110', '10001', '10001', '01110', '10001', '10001', '01110'],
+  9: ['01110', '10001', '10001', '01111', '00001', '00010', '01100'],
+};
+function drawDotScore(canvas, n) {
+  const str = String(n);
+  const dot = 7,
+    pitch = 9,
+    gapDigit = 10;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = str.length * (5 * pitch) + (str.length - 1) * gapDigit;
+  const h = 7 * pitch;
+  if (canvas.width !== Math.ceil(w * dpr)) {
+    canvas.width = Math.ceil(w * dpr);
+    canvas.height = Math.ceil(h * dpr);
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+  }
+  const g = canvas.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+  g.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--neon').trim() || '#1eff3c';
+  let x0 = 0;
+  for (const ch of str) {
+    const rows = DIGITS[ch];
+    for (let r = 0; r < 7; r++)
+      for (let c = 0; c < 5; c++) {
+        if (rows[r][c] !== '1') continue;
+        g.beginPath();
+        g.arc(x0 + c * pitch + pitch / 2, r * pitch + pitch / 2, dot / 2, 0, Math.PI * 2);
+        g.fill();
+      }
+    x0 += 5 * pitch + gapDigit;
   }
 }
 
@@ -1001,16 +1071,6 @@ function frame(now) {
     if (steps >= 12) S.acc = 0;
     S.runTime += dt;
     S.time += dt;
-    S.score = Math.floor(S.distance / SCORE_DIV);
-    const lvl = Math.floor(S.score / LEVEL_EVERY);
-    if (lvl > S.level) {
-      S.level = lvl;
-      theme.target = lvl;
-      setUiTheme(lvl);
-      audio.intensity = lvl;
-      audio.play('level');
-      banner('LEVEL ' + (lvl + 1));
-    }
     renderPos.lerpVectors(ball.prev, ball.pos, THREE.MathUtils.clamp(S.acc / STEP, 0, 1));
     audio.setMotion(ball.grounded, -ball.vel.z, true);
     updateHud();

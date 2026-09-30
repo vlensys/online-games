@@ -29,28 +29,22 @@ function draw(id, ctx, W, H) {
   const r = rng(id.length * 977 + id.charCodeAt(0));
   switch (id) {
     case 'classic': {
-      ctx.fillStyle = '#b9bec4';
+      // black ball with bands (used as a glow mask tinted with the section colour)
+      ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, W, H);
-      // soft mottling so the roll is visible without looking busy
-      for (let i = 0; i < 160; i++) {
-        const v = 150 + Math.floor(r() * 60);
-        ctx.fillStyle = `rgba(${v},${v + 4},${v + 8},0.35)`;
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 9;
+      const line = (x0, y0, x1, y1) => {
         ctx.beginPath();
-        ctx.arc(r() * W, r() * H, 6 + r() * 22, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.strokeStyle = '#5d646c';
-      ctx.lineWidth = 6;
-      ctx.beginPath();
-      ctx.moveTo(0, H / 2);
-      ctx.lineTo(W, H / 2);
-      ctx.stroke();
-      for (const x of [W * 0.25, W * 0.75]) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, H);
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
         ctx.stroke();
-      }
+      };
+      line(0, H / 2, W, H / 2);
+      line(0, H * 0.14, W, H * 0.14);
+      line(0, H * 0.86, W, H * 0.86);
+      for (const x of [0, W / 2]) line(x, 0, x, H);
+      for (const x of [W / 4, (W * 3) / 4]) line(x, H * 0.14, x, H * 0.86);
       break;
     }
     case 'checker': {
@@ -206,7 +200,7 @@ export function skinMaterialParams(id) {
     case 'galaxy':
       return { metalness: 0.2, roughness: 0.3, emissiveIntensity: 0.35 };
     case 'classic':
-      return { metalness: 0.35, roughness: 0.35, emissiveIntensity: 0.06 };
+      return { metalness: 0.2, roughness: 0.45, emissiveIntensity: 1 };
     default:
       return { metalness: 0.15, roughness: 0.35, emissiveIntensity: 0.08 };
   }

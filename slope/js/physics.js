@@ -75,6 +75,15 @@ export function sphereBox(c, r, b, out) {
     }
     // beyond an edge that is shared with a neighbouring tile: the neighbour owns this contact
     if ((b.connectStart && lz > hz) || (b.connectEnd && lz < -hz)) return false;
+    // lip assist: clipping the very top of a platform's front edge pops the ball up onto it
+    // instead of bouncing it back into the void
+    if (!b.connectStart && lz > hz && lz < hz + r * 0.8 && Math.abs(lx) <= hx && ly >= hy - r * 0.9 && ly < hy + r) {
+      const pen = r - (ly - hy);
+      if (pen <= 0) return false;
+      out.n.set(0, 1, 0).applyQuaternion(b.quat);
+      out.pen = Math.min(pen, r * 0.5);
+      return true;
+    }
   }
 
   const cx = clamp(lx, -hx, hx),
@@ -140,6 +149,7 @@ export function integrateBall(b, h, tiles, R = 1) {
   const n = Math.min(14, Math.max(1, Math.ceil((sp * h) / (R * 0.3))));
   const sh = h / n;
   let grounded = false;
+  let groundBox = null;
   let impact = 0;
   let wall = 0;
   for (let i = 0; i < n; i++) {
@@ -158,9 +168,10 @@ export function integrateBall(b, h, tiles, R = 1) {
       }
       if (_hit.n.y > 0.55) {
         grounded = true;
+        groundBox = box;
         b.groundN.copy(_hit.n);
       }
     }
   }
-  return { grounded, impact, wall };
+  return { grounded, groundBox, impact, wall };
 }
