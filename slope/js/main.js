@@ -1,0 +1,1088 @@
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+import { Track, speedAt, GRAVITY, BALL_R } from './track.js';
+import { sphereTouchesBox, boundsOverlapSphere, topHeightBelow } from './physics.js';
+import { createBall, stepController, COYOTE, JUMP_BUFFER, DASH_CD, PHASE_TIME } from './ball.js';
+import { InstancedPool, createTileMaterial, createHazardMaterial, Background, Particles, Shards, LandingMarker, makeSign } from './render.js';
+import { GameAudio } from './audio.js';
+import { SKINS, skinTexture, skinMaterialParams, skinPreview } from './skins.js';
+import { loadSave, writeSave, resetSave } from './storage.js';
+
+window.__slopeStarted = true;
+const $ = (id) => document.getElementById(id);
+
+// ============================================================================ constants
+const STEP = 1 / 120;
+const SCORE_DIV = 3;
+const LEVEL_EVERY = 300;
+
+const THEMES = [
+  { neon: '#3ee07a', fill: '#050807', horizon: '#0b1510', ui: '62, 224, 122' },
+  { neon: '#35c8e8', fill: '#04070a', horizon: '#0a1319', ui: '53, 200, 232' },
+  { neon: '#a77ef0', fill: '#06050a', horizon: '#120e1c', ui: '167, 126, 240' },
+  { neon: '#f0a830', fill: '#080604', horizon: '#1a140a', ui: '240, 168, 48' },
+  { neon: '#5b8cf0', fill: '#04050a', horizon: '#0c1020', ui: '91, 140, 240' },
+  { neon: '#d4e04a', fill: '#070804', horizon: '#15170a', ui: '212, 224, 74' },
+  { neon: '#e6e6e6', fill: '#060606', horizon: '#141414', ui: '230, 230, 230' },
+];
+
+// ============================================================================ save / settings
+let save = loadSave();
+const settings = save.settings;
+const persist = () => writeSave(save);
+
+// ============================================================================ renderer
+const coarse = matchMedia('(pointer: coarse)').matches;
+let renderer;
+try {
+  // MSAA gives clean lines; skipped on the Low preset (and phones default to Low)
+  const wantAA = !(settings.quality === 'low' || (settings.quality === 'auto' && (save.autoLevel === 'low' || coarse)));
+  renderer = new THREE.WebGLRenderer({ canvas: $('c'), antialias: wantAA, powerPreference: 'high-performance', stencil: false });
+} catch (e) {
+  fatal('WebGL is not available on this device/browser. ' + (e && e.message ? e.message : ''));
+  throw e;
+}
+renderer.setClearColor(0x02020a, 1);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.1, 2000);
+camera.position.set(0, 5, 12);
+
+// lighting for the ball / gems (track is self-lit)
+scene.add(new THREE.HemisphereLight(0xbfdfff, 0x101018, 0.5));
+const sun = new THREE.DirectionalLight(0xffffff, 1.3);
+sun.position.set(-4, 10, 6);
+scene.add(sun);
+scene.add(sun.target);
+{
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  pmrem.dispose();
+}
+
+// ============================================================================ quality
+const urlQ = new URLSearchParams(location.search).get('quality');
+if (['auto', 'low', 'medium', 'high'].includes(urlQ)) settings.quality = urlQ;
+const autoDefault = () => save.autoLevel || (coarse ? 'low' : 'medium');
+let quality = settings.quality === 'auto' ? autoDefault() : settings.quality;
+
+function applyQuality() {
+  const dpr = window.devicePixelRatio || 1;
+  const pr = quality === 'low' ? Math.min(dpr, 1.5) * 0.7 : quality === 'medium' ? Math.min(dpr, 1.5) : Math.min(dpr, 2);
+  renderer.setPixelRatio(pr);
+  renderer.setSize(innerWidth, innerHeight, false);
+}
+applyQuality();
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  applyQuality();
+});
+
+// ============================================================================ world objects
+const fogColor = new THREE.Color('#050806');
+const tileMat = createTileMaterial(fogColor);
+const hazardMat = createHazardMaterial(fogColor);
+const unitBox = new THREE.BoxGeometry(1, 1, 1);
+const pools = {
+  tiles: new InstancedPool(unitBox, tileMat, 1100),
+  hazards: new InstancedPool(unitBox, hazardMat, 500),
+  gems: new InstancedPool(
+    new THREE.OctahedronGeometry(0.55, 0),
+    new THREE.MeshStandardMaterial({ color: '#7fe6ff', emissive: '#0b6f8a', emissiveIntensity: 0.6, metalness: 0.3, roughness: 0.3, flatShading: true }),
+    300
+  ),
+};
+scene.add(pools.tiles.mesh, pools.hazards.mesh, pools.gems.mesh);
+
+function makeShieldPickup() {
+  const g = new THREE.Group();
+  const cage = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.IcosahedronGeometry(0.9, 0)), new THREE.LineBasicMaterial({ color: '#46e6ff' }));
+  const core = new THREE.Mesh(new THREE.IcosahedronGeometry(0.5, 1), new THREE.MeshStandardMaterial({ color: '#7fe6ff', emissive: '#0b6f8a', emissiveIntensity: 0.6, flatShading: true }));
+  g.add(cage, core);
+  g.userData.spin = true;
+  return g;
+}
+
+const track = new Track(scene, pools, makeSign, makeShieldPickup);
+const bg = new Background(scene, quality);
+const particles = new Particles(scene);
+const shards = new Shards(scene);
+const marker = new LandingMarker(scene);
+
+// ball
+const ballMat = new THREE.MeshStandardMaterial({ color: '#ffffff', metalness: 0.4, roughness: 0.3, transparent: true });
+const ballMesh = new THREE.Mesh(new THREE.SphereGeometry(BALL_R, 48, 32), ballMat);
+scene.add(ballMesh);
+const bubble = new THREE.Mesh(
+  new THREE.SphereGeometry(BALL_R * 1.45, 32, 20),
+  new THREE.ShaderMaterial({
+    uniforms: { uColor: { value: new THREE.Color('#46e6ff') }, uTime: { value: 0 } },
+    vertexShader: `varying vec3 vN; varying vec3 vV; void main(){ vec4 mv = modelViewMatrix * vec4(position,1.0); vN = normalize(normalMatrix * normal); vV = normalize(-mv.xyz); gl_Position = projectionMatrix * mv; }`,
+    fragmentShader: `uniform vec3 uColor; uniform float uTime; varying vec3 vN; varying vec3 vV; void main(){ float f = pow(1.0 - abs(dot(vN, vV)), 2.5); gl_FragColor = vec4(uColor * f * 0.7, 1.0);
+      #include <colorspace_fragment>
+    }`,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  })
+);
+bubble.visible = false;
+scene.add(bubble);
+
+function applySkin(id) {
+  if (!SKINS.some((k) => k.id === id)) id = save.skin = 'classic';
+  const p = skinMaterialParams(id);
+  const tex = skinTexture(id);
+  ballMat.map = tex;
+  ballMat.emissiveMap = tex;
+  ballMat.emissive.set('#ffffff');
+  ballMat.emissiveIntensity = p.emissiveIntensity;
+  ballMat.metalness = p.metalness;
+  ballMat.roughness = p.roughness;
+  ballMat.needsUpdate = true;
+}
+applySkin(save.skin);
+
+// ============================================================================ theme
+const theme = {
+  neon: new THREE.Color(THEMES[0].neon),
+  fill: new THREE.Color(THEMES[0].fill),
+  horizon: new THREE.Color(THEMES[0].horizon),
+  target: 0,
+};
+const _tn = new THREE.Color(),
+  _tf = new THREE.Color(),
+  _th = new THREE.Color();
+function setThemeInstant(i) {
+  const t = THEMES[i % THEMES.length];
+  theme.target = i;
+  theme.neon.set(t.neon);
+  theme.fill.set(t.fill);
+  theme.horizon.set(t.horizon);
+  pushTheme();
+}
+function pushTheme() {
+  tileMat.uniforms.uColor.value.copy(theme.neon);
+  tileMat.uniforms.uFill.value.copy(theme.fill);
+  fogColor.copy(theme.horizon).multiplyScalar(0.6);
+  bg.setTheme(theme.horizon);
+  renderer.setClearColor(fogColor);
+}
+function updateTheme(dt) {
+  const t = THEMES[theme.target % THEMES.length];
+  const k = 1 - Math.exp(-dt * 2.2);
+  theme.neon.lerp(_tn.set(t.neon), k);
+  theme.fill.lerp(_tf.set(t.fill), k);
+  theme.horizon.lerp(_th.set(t.horizon), k);
+  pushTheme();
+}
+function setUiTheme(i) {
+  document.documentElement.style.setProperty('--neon', THEMES[i % THEMES.length].neon);
+  document.documentElement.style.setProperty('--neon-rgb', THEMES[i % THEMES.length].ui);
+}
+setThemeInstant(0);
+
+// ============================================================================ audio
+const audio = new GameAudio();
+audio.setVolumes(settings.sfx, settings.music);
+function unlockAudio() {
+  audio.unlock();
+  audio.setVolumes(settings.sfx, settings.music);
+  if (!audio.musicOn && settings.music > 0) audio.startMusic();
+}
+
+// ============================================================================ input
+const keys = new Set();
+const input = { jumpQueued: 0, dashQueued: false, touchSteer: 0, pad: { steer: 0, a: false, b: false, start: false }, ctl: {} };
+const JUMP_KEYS = ['Space', 'KeyW', 'ArrowUp'];
+const DASH_KEYS = ['ShiftLeft', 'ShiftRight', 'KeyS', 'ArrowDown', 'KeyK'];
+
+addEventListener('keydown', (e) => {
+  if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') && e.code !== 'Escape') return;
+  if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
+  unlockAudio();
+  const first = !keys.has(e.code);
+  keys.add(e.code);
+  if (!first) return;
+  if (S.state === 'playing') {
+    if (JUMP_KEYS.includes(e.code)) input.jumpQueued = JUMP_BUFFER;
+    if (DASH_KEYS.includes(e.code)) input.dashQueued = true;
+    if (e.code === 'Escape' || e.code === 'KeyP') pauseGame();
+    if (e.code === 'KeyR') startRun();
+  } else if (S.state === 'menu') {
+    if (modalOpen()) {
+      if (e.code === 'Escape') closeModal();
+      return;
+    }
+    if (e.code === 'Space' || e.code === 'Enter') startRun();
+  } else if (S.state === 'paused') {
+    if (modalOpen()) {
+      if (e.code === 'Escape') closeModal();
+      return;
+    }
+    if (e.code === 'Escape' || e.code === 'KeyP' || e.code === 'Space' || e.code === 'Enter') resumeGame();
+    if (e.code === 'KeyR') startRun();
+  } else if (S.state === 'dead') {
+    if (S.deadTimer > 0.55 && (e.code === 'Space' || e.code === 'Enter' || e.code === 'KeyR')) startRun();
+    if (e.code === 'Escape' && S.deadTimer > 0.3) toMenu();
+  }
+  if (e.code === 'KeyM') {
+    const m = audio.toggleMute();
+    toast(m ? 'MUTED' : 'SOUND ON');
+  }
+});
+addEventListener('keyup', (e) => keys.delete(e.code));
+addEventListener('blur', () => {
+  keys.clear();
+  if (S.state === 'playing') pauseGame();
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && S.state === 'playing') pauseGame();
+});
+
+// ---------------------------------------------------------------- touch controls
+// Hold the left / right half of the screen to steer (multi-touch, fingers can slide across).
+// Swipe up = jump, swipe down = dash, or use the on-screen buttons.
+let touchMode = coarse;
+const touches = new Map(); // pointerId -> { x, y, t, sx, sy, fired }
+const touchEl = $('touch');
+function setTouchMode(on) {
+  if (touchMode === on) return;
+  touchMode = on;
+  touchEl.classList.toggle('show', on && S.state === 'playing');
+  document.body.classList.toggle('touch', on);
+}
+document.body.classList.toggle('touch', touchMode);
+function steerFromTouches() {
+  let s = 0;
+  for (const t of touches.values()) s += t.x < innerWidth / 2 ? -1 : 1;
+  input.touchSteer = Math.max(-1, Math.min(1, s));
+}
+touchEl.addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'mouse') return;
+  e.preventDefault();
+  unlockAudio();
+  try {
+    touchEl.setPointerCapture(e.pointerId);
+  } catch {}
+  touches.set(e.pointerId, { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, t: performance.now(), fired: false });
+  steerFromTouches();
+});
+touchEl.addEventListener('pointermove', (e) => {
+  const t = touches.get(e.pointerId);
+  if (!t) return;
+  t.x = e.clientX;
+  t.y = e.clientY;
+  const dy = e.clientY - t.sy;
+  const fast = performance.now() - t.t < 350;
+  if (!t.fired && fast && Math.abs(dy) > 38 && Math.abs(dy) > Math.abs(e.clientX - t.sx) * 1.2) {
+    t.fired = true;
+    if (dy < 0) input.jumpQueued = JUMP_BUFFER;
+    else input.dashQueued = true;
+  }
+  steerFromTouches();
+});
+for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture'])
+  touchEl.addEventListener(ev, (e) => {
+    touches.delete(e.pointerId);
+    steerFromTouches();
+  });
+for (const [id, fn] of [
+  ['tb-jump', () => (input.jumpQueued = JUMP_BUFFER)],
+  ['tb-dash', () => (input.dashQueued = true)],
+]) {
+  $(id).addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    unlockAudio();
+    fn();
+  });
+}
+// any real touch anywhere switches to touch UI; any key press switches back
+addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'touch') setTouchMode(true);
+}, true);
+addEventListener('keydown', () => setTouchMode(false), true);
+addEventListener('contextmenu', (e) => e.preventDefault());
+// iOS only unlocks audio on touchend/click
+for (const ev of ['touchend', 'click']) addEventListener(ev, () => unlockAudio(), { passive: true });
+
+function pollGamepad() {
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  let p = null;
+  for (const g of pads) if (g && g.connected) p = p || g;
+  const pad = input.pad;
+  if (!p) {
+    pad.steer = 0;
+    return;
+  }
+  let ax = p.axes[0] || 0;
+  if (Math.abs(ax) < 0.18) ax = 0;
+  if (p.buttons[14] && p.buttons[14].pressed) ax = -1;
+  if (p.buttons[15] && p.buttons[15].pressed) ax = 1;
+  pad.steer = ax;
+  const a = !!(p.buttons[0] && p.buttons[0].pressed);
+  const b = !!((p.buttons[1] && p.buttons[1].pressed) || (p.buttons[2] && p.buttons[2].pressed) || (p.buttons[7] && p.buttons[7].pressed));
+  const st = !!(p.buttons[9] && p.buttons[9].pressed);
+  if (a && !pad.a) {
+    if (S.state === 'playing') input.jumpQueued = JUMP_BUFFER;
+    else if (S.state === 'menu' && !modalOpen()) startRun();
+    else if (S.state === 'dead' && S.deadTimer > 0.55) startRun();
+    else if (S.state === 'paused') resumeGame();
+  }
+  if (b && !pad.b && S.state === 'playing') input.dashQueued = true;
+  if (st && !pad.start) {
+    if (S.state === 'playing') pauseGame();
+    else if (S.state === 'paused') resumeGame();
+  }
+  pad.a = a;
+  pad.b = b;
+  pad.start = st;
+}
+
+function readSteer() {
+  let s = 0;
+  if (keys.has('KeyA') || keys.has('ArrowLeft')) s -= 1;
+  if (keys.has('KeyD') || keys.has('ArrowRight')) s += 1;
+  s += input.touchSteer || 0;
+  s += input.pad.steer;
+  return THREE.MathUtils.clamp(s, -1, 1);
+}
+
+// ============================================================================ game state
+const S = {
+  state: 'menu',
+  mode: settings.mode,
+  time: 0,
+  runTime: 0,
+  distance: 0,
+  score: 0,
+  gems: 0,
+  level: 0,
+  deadTimer: 0,
+  cause: '',
+  slowmo: 1,
+  shake: 0,
+  fovKick: 0,
+  acc: 0,
+  stuck: 0,
+  bestAtStart: 0,
+};
+const ball = createBall();
+const renderPos = new THREE.Vector3();
+
+function resetWorld() {
+  const hints = save.runs < 8;
+  track.reset((Math.random() * 2 ** 31) | 0, S.mode, hints && S.mode === 'plus');
+  track.update(0);
+  ball.pos.set(0, BALL_R + 0.02, 0);
+  // settle onto the runway surface
+  const ref = track.refAt(0);
+  ball.pos.y = ref.y + BALL_R + 0.1;
+  ball.prev.copy(ball.pos);
+  ball.vel.set(0, 0, -4);
+  ball.quat.identity();
+  ball.grounded = false;
+  ball.coyote = 0;
+  ball.jumpLock = 0;
+  ball.dashCD = 0;
+  ball.dashTime = 0;
+  ball.phase = 0;
+  ball.shield = false;
+  ball.invuln = 0;
+  ball.alive = true;
+  ball.airTime = 0;
+  ballMesh.visible = true;
+  shards.hide();
+  particles.clear();
+  S.time = 0;
+  S.runTime = 0;
+  S.distance = 0;
+  S.score = 0;
+  S.gems = 0;
+  S.level = 0;
+  S.deadTimer = 0;
+  S.slowmo = 1;
+  S.shake = 0;
+  S.acc = 0;
+  S.stuck = 0;
+  setThemeInstant(0);
+  setUiTheme(0);
+  audio.intensity = 0;
+  camera.position.set(0, ball.pos.y + 4, 10);
+}
+
+function startRun() {
+  unlockAudio();
+  closeModal();
+  resetWorld();
+  S.state = 'playing';
+  S.bestAtStart = save.best[S.mode] || 0;
+  showScreen(null);
+  $('hud').classList.add('show');
+  $('hud').classList.toggle('classic', S.mode === 'classic');
+  touchEl.classList.toggle('show', touchMode);
+  touches.clear();
+  input.touchSteer = 0;
+  $('touch').classList.toggle('classic', S.mode === 'classic');
+  $('hud-best').innerHTML = `BEST <b>${S.bestAtStart}</b>`;
+  banner('GO!');
+  audio.play('go');
+  $('c').focus();
+}
+
+function pauseGame() {
+  if (S.state !== 'playing') return;
+  S.state = 'paused';
+  touchEl.classList.remove('show');
+  showScreen('pause');
+  audio.setMotion(false, 0, false);
+}
+function resumeGame() {
+  if (S.state !== 'paused') return;
+  closeModal();
+  S.state = 'playing';
+  showScreen(null);
+  touchEl.classList.toggle('show', touchMode);
+  S.acc = 0;
+  $('c').focus();
+}
+function toMenu() {
+  closeModal();
+  S.state = 'menu';
+  $('hud').classList.remove('show');
+  $('touch').classList.remove('show');
+  resetWorld();
+  refreshMenu();
+  showScreen('menu');
+  audio.setMotion(false, 0, false);
+}
+
+function die(cause) {
+  if (!ball.alive) return;
+  ball.alive = false;
+  S.score = Math.floor(S.distance / SCORE_DIV);
+  S.state = 'dead';
+  touchEl.classList.remove('show');
+  touches.clear();
+  input.touchSteer = 0;
+  S.deadTimer = 0;
+  S.cause = cause;
+  audio.setMotion(false, 0, false);
+  if (cause === 'crash') {
+    ballMesh.visible = false;
+    bubble.visible = false;
+    marker.hide();
+    shards.explode(ball.pos, ball.vel);
+    particles.burst(ball.pos, new THREE.Color('#c83040'), 30, 16, { life: 0.8, size: 0.45, drag: 1.2, gravity: -18 });
+    audio.play('crash');
+    S.slowmo = 0.25;
+    if (settings.shake) S.shake = 1.2;
+  } else {
+    audio.play('fall');
+  }
+  // record
+  const best = save.best[S.mode] || 0;
+  const newBest = S.score > best;
+  if (newBest) save.best[S.mode] = S.score;
+  save.gems += S.gems;
+  save.runs++;
+  save.totalDistance += Math.floor(S.distance);
+  persist();
+  setTimeout(() => showGameOver(newBest), cause === 'crash' ? 900 : 1100);
+}
+
+function showGameOver(newBest) {
+  if (S.state !== 'dead') return;
+  $('over-title').textContent = S.cause === 'crash' ? 'CRASHED' : 'YOU FELL';
+  $('over-cause').textContent = S.cause === 'crash' ? 'You hit an obstacle.' : 'Off the edge into the void.';
+  $('over-score').textContent = S.score;
+  $('over-best').textContent = save.best[S.mode];
+  $('over-gems').textContent = '+' + S.gems;
+  $('over-dist').textContent = Math.floor(S.distance) + ' m';
+  $('over-time').textContent = S.runTime.toFixed(1) + 's';
+  $('over-newbest').classList.toggle('show', newBest && S.score > 0);
+  showScreen('over');
+}
+
+// ============================================================================ physics
+const _tmp = new THREE.Vector3();
+const _axis = new THREE.Vector3();
+const _dq = new THREE.Quaternion();
+const _col = new THREE.Color();
+const CYAN = new THREE.Color('#46e6ff');
+
+function stepBall(h) {
+  const b = ball;
+  const plus = S.mode === 'plus';
+  const ctl = input.ctl;
+  ctl.steer = readSteer() * settings.sensitivity;
+  ctl.target = speedAt(S.distance);
+  ctl.plus = plus;
+  ctl.jumpQueued = input.jumpQueued;
+  ctl.dashQueued = input.dashQueued;
+  const { grounded, wasGrounded, impact, wall, jumped, dashed, fwd } = stepController(b, h, ctl, track.tiles);
+  input.jumpQueued = ctl.jumpQueued;
+  input.dashQueued = ctl.dashQueued;
+  if (jumped) {
+    audio.play('jump');
+    flashAbility('ab-jump');
+  }
+  if (dashed) {
+    S.fovKick = 9;
+    audio.play('dash');
+    flashAbility('ab-dash');
+  }
+  if (grounded && !wasGrounded) {
+    if (impact > 6) {
+      audio.play('land', impact / 30);
+      if (impact > 14 && settings.shake) S.shake = Math.max(S.shake, Math.min(impact / 70, 0.35));
+    }
+  }
+  if (wall > 5) audio.play('bump');
+
+  // rolling rotation
+  _axis.crossVectors(b.groundN, b.vel);
+  const w = _axis.length() / BALL_R;
+  if (w > 1e-4) {
+    _axis.normalize();
+    _dq.setFromAxisAngle(_axis, w * h);
+    b.quat.premultiply(_dq);
+  }
+
+  // hazards
+  for (const hz of track.hazards) {
+    if (!hz.alive) continue;
+    if (!boundsOverlapSphere(hz.box, b.pos, BALL_R)) continue;
+    if (!sphereTouchesBox(b.pos, BALL_R * 0.92, hz.box)) continue;
+    if (b.phase > 0 || b.invuln > 0) {
+      continue;
+    }
+    if (b.shield) {
+      b.shield = false;
+      b.invuln = 0.6;
+      track.killHazard(hz);
+      audio.play('shieldBreak');
+      particles.burst(hz.box.pos, new THREE.Color('#c83040'), 24, 12, { life: 0.6, size: 0.45, gravity: -18 });
+      if (settings.shake) S.shake = 0.5;
+      toast('SHIELD BROKEN');
+      continue;
+    }
+    die('crash');
+    return;
+  }
+
+  // gems
+  const gr = (BALL_R + 0.95) ** 2;
+  for (const g of track.gems) {
+    if (g.taken) continue;
+    if (g.pos.distanceToSquared(b.pos) < gr) {
+      track.takeGem(g);
+      S.gems++;
+      audio.play('gem', S.gems);
+      particles.burst(g.pos, CYAN, 6, 4, { life: 0.35, size: 0.25, gravity: 0 });
+    }
+  }
+  for (const p of track.pickups) {
+    if (p.taken) continue;
+    if (p.pos.distanceToSquared(b.pos) < 2.4 * 2.4) {
+      p.taken = true;
+      p.mesh.visible = false;
+      if (p.type === 'shield') {
+        b.shield = true;
+        audio.play('shield');
+        toast('SHIELD UP');
+      }
+    }
+  }
+
+  // progress
+  const d = track.distAt(b.pos.z);
+  if (d > S.distance) S.distance = d;
+
+  // falling / stuck
+  const ref = track.refAt(b.pos.z);
+  if (b.pos.y < ref.y - 16) {
+    die('fall');
+    return;
+  }
+  if (fwd < 3 && S.runTime > 2) {
+    S.stuck += h;
+    if (S.stuck > 1.6) die('crash');
+  } else S.stuck = 0;
+}
+
+// Floating origin: keep numbers small on huge runs (prevents jitter far from the start).
+function maybeRecenter() {
+  if (ball.pos.z > -2500) return;
+  const o = new THREE.Vector3(0, -Math.round(ball.pos.y), -Math.round(ball.pos.z));
+  track.shift(o);
+  ball.pos.add(o);
+  ball.prev.add(o);
+  camera.position.add(o);
+  camLook.add(o);
+  particles.shift(o);
+  shards.shift(o);
+}
+
+// ============================================================================ camera & visuals
+const camLook = new THREE.Vector3();
+const _desired = new THREE.Vector3();
+let menuAngle = 0;
+
+// Keep roughly the same horizontal view on tall/narrow (portrait phone) screens.
+function fitFov(vfov) {
+  const aspect = camera.aspect;
+  if (aspect >= 1.3) return vfov;
+  const h = 2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(vfov) / 2) * 1.3);
+  const v = THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(h / 2) / aspect));
+  return Math.min(v, 100);
+}
+
+function damp(a, b, k, dt) {
+  return a + (b - a) * (1 - Math.exp(-k * dt));
+}
+
+function updateCamera(dt) {
+  const p = renderPos;
+  if (S.state === 'menu') {
+    menuAngle += dt * 0.12;
+    const r = 13;
+    _desired.set(p.x + Math.sin(menuAngle) * r, p.y + 4.2 + Math.sin(menuAngle * 0.7) * 1.2, p.z + Math.cos(menuAngle) * r);
+    camera.position.lerp(_desired, 1 - Math.exp(-2 * dt));
+    camLook.lerp(_tmp.set(p.x, p.y + 0.5, p.z - 6), 1 - Math.exp(-3 * dt));
+    camera.lookAt(camLook);
+    camera.fov = damp(camera.fov, fitFov(62), 3, dt);
+    camera.updateProjectionMatrix();
+    return;
+  }
+  const speed = Math.max(-ball.vel.z, 0);
+  const ref = track.refAt(p.z);
+  if (S.state !== 'dead' || S.cause === 'crash') {
+    const back = 9.6 + speed * 0.03;
+    const up = 4.0 + speed * 0.014;
+    // follow the ball, but blend towards the track line so jumps / falls don't yank the view
+    const baseY = S.state === 'dead' ? camera.position.y - up : Math.max(p.y, ref.y + BALL_R - 1.5) * 0.8 + (ref.y + BALL_R) * 0.2;
+    _desired.set(THREE.MathUtils.lerp(p.x, ref.x, 0.15), baseY + up, p.z + back);
+    camera.position.x = damp(camera.position.x, _desired.x, 6, dt);
+    camera.position.y = damp(camera.position.y, _desired.y, 7, dt);
+    if (S.state === 'dead') camera.position.z = damp(camera.position.z, _desired.z + 4, 1.5, dt);
+    else camera.position.z = _desired.z;
+    const lookY = p.y * 0.8 + (ref.y + BALL_R) * 0.2 - 2.4;
+    camLook.set(THREE.MathUtils.lerp(p.x, camera.position.x, 0.25), lookY, p.z - 14);
+  } else {
+    // falling: stop following forward, keep watching the ball drop away
+    camLook.lerp(p, 1 - Math.exp(-4 * dt));
+  }
+  camera.lookAt(camLook);
+  // lateral lean
+  camera.rotateZ(THREE.MathUtils.clamp(-ball.vel.x * 0.0045, -0.08, 0.08));
+  // shake
+  if (S.shake > 0) {
+    const s = S.shake * S.shake * 0.35;
+    camera.position.x += (Math.random() - 0.5) * s;
+    camera.position.y += (Math.random() - 0.5) * s;
+    S.shake = Math.max(0, S.shake - dt * 2.2);
+  }
+  S.fovKick = damp(S.fovKick, 0, 4, dt);
+  const fov = 66 + THREE.MathUtils.clamp((speed - 26) * 0.32, 0, 16) + S.fovKick;
+  camera.fov = damp(camera.fov, fitFov(fov), 5, dt);
+  camera.updateProjectionMatrix();
+}
+
+const _gemQ = new THREE.Quaternion();
+const _gemS = new THREE.Vector3(1, 1, 1);
+const _markerOut = { n: new THREE.Vector3(), p: new THREE.Vector3(), y: 0 };
+
+function updateVisuals(dt) {
+  // ball
+  ballMesh.position.copy(renderPos);
+  ballMesh.quaternion.copy(ball.quat);
+  const phasing = ball.phase > 0;
+  ballMat.opacity = phasing ? 0.4 : 1;
+  bubble.visible = ball.shield && ball.alive;
+  bubble.position.copy(renderPos);
+  bubble.material.uniforms.uTime.value = S.time;
+
+  // contact shadow under the ball (doubles as a landing guide in the air)
+  if (ball.alive && S.state !== 'dead') {
+    let best = -Infinity;
+    const n = new THREE.Vector3();
+    for (const t of track.tiles) {
+      if (!t.box.surface) continue;
+      if (renderPos.z < t.box.min.z - 1 || renderPos.z > t.box.max.z + 1) continue;
+      if (topHeightBelow(t.box, renderPos, _markerOut) && _markerOut.y > best) {
+        best = _markerOut.y;
+        n.copy(_markerOut.n);
+      }
+    }
+    if (best > -Infinity) marker.place(_tmp.set(renderPos.x, best, renderPos.z), n, renderPos.y - best);
+    else marker.hide();
+  } else marker.hide();
+
+  // gems spin
+  const pool = pools.gems;
+  for (const g of track.gems) {
+    if (g.taken) continue;
+    _gemQ.setFromAxisAngle(_axis.set(0, 1, 0), S.time * 2.5 + g.phase);
+    _tmp.copy(g.pos);
+    _tmp.y += Math.sin(S.time * 3 + g.phase) * 0.15;
+    pool.set(g.slot, _tmp, _gemQ, _gemS);
+  }
+  for (const p of track.pickups) {
+    p.mesh.rotation.y += dt * 2;
+    p.mesh.rotation.x += dt * 0.7;
+  }
+
+  // lights follow
+  sun.position.set(renderPos.x - 4, renderPos.y + 10, renderPos.z + 6);
+  sun.target.position.copy(renderPos);
+
+  tileMat.uniforms.uTime.value = S.time;
+  hazardMat.uniforms.uTime.value = S.time;
+  bg.update(dt, camera);
+  particles.update(dt);
+  shards.update(dt);
+  pools.tiles.flush();
+  pools.hazards.flush();
+  pools.gems.flush();
+}
+
+// ============================================================================ HUD
+const hudCache = {};
+function setText(id, v) {
+  if (hudCache[id] === v) return;
+  hudCache[id] = v;
+  $(id).textContent = v;
+}
+function setRing(id, p, ready) {
+  const el = $(id);
+  const key = id + 'p';
+  const v = Math.round(p * 50) / 50;
+  if (hudCache[key] !== v) {
+    hudCache[key] = v;
+    const bar = el.querySelector('.bar');
+    if (bar) bar.style.setProperty('--p', v);
+  }
+  if (hudCache[id + 'r'] !== ready) {
+    hudCache[id + 'r'] = ready;
+    el.classList.toggle('ready', ready);
+  }
+}
+function flashAbility() {}
+function updateHud() {
+  setText('hud-score', String(S.score));
+  setText('hud-speed', String(Math.round(Math.max(-ball.vel.z, 0) * 3.6)));
+  setText('hud-level', 'LEVEL ' + (S.level + 1));
+  const gemsEl = $('hud-gems').querySelector('b');
+  if (hudCache.gems !== S.gems) {
+    hudCache.gems = S.gems;
+    gemsEl.textContent = S.gems;
+  }
+  if (S.mode === 'plus') {
+    setRing('ab-jump', ball.coyote > 0 ? 1 : 0.25, ball.coyote > 0);
+    setRing('ab-dash', 1 - ball.dashCD / DASH_CD, ball.dashCD <= 0);
+    const cool = ball.dashCD > 0;
+    if (hudCache.dashCool !== cool) {
+      hudCache.dashCool = cool;
+      $('tb-dash').classList.toggle('cooling', cool);
+    }
+  }
+  const sh = ball.shield;
+  if (hudCache.shield !== sh) {
+    hudCache.shield = sh;
+    $('ab-shield').classList.toggle('on', sh);
+
+  }
+  if (S.score > S.bestAtStart && S.bestAtStart > 0 && !hudCache.bestBeaten) {
+    hudCache.bestBeaten = true;
+    toast('NEW BEST!');
+  }
+}
+
+let toastTimer = 0;
+function toast(msg) {
+  banner(msg, true);
+}
+function banner(msg) {
+  const el = $('banner');
+  el.textContent = msg;
+  el.classList.remove('go');
+  void el.offsetWidth;
+  el.classList.add('go');
+  clearTimeout(toastTimer);
+}
+
+// ============================================================================ screens / menus
+function showScreen(id) {
+  for (const s of ['menu', 'pause', 'over', 'loading']) $(s).classList.toggle('show', s === id);
+}
+function modalOpen() {
+  return $('modal').classList.contains('show');
+}
+function openModal(panel) {
+  audio.play('click');
+  $('modal').classList.add('show');
+  for (const s of $('modal').querySelectorAll('section')) s.classList.toggle('show', s.dataset.panel === panel);
+  if (panel === 'skins') buildSkins();
+  if (panel === 'settings') syncSettingsUI();
+}
+function closeModal() {
+  $('modal').classList.remove('show');
+}
+
+function refreshMenu() {
+  for (const b of document.querySelectorAll('.mode')) b.classList.toggle('active', b.dataset.mode === S.mode);
+  $('menu-best').textContent = save.best[S.mode] || 0;
+  $('menu-gems').textContent = save.gems;
+  hudCache.bestBeaten = false;
+}
+
+for (const b of document.querySelectorAll('.mode'))
+  b.addEventListener('click', () => {
+    S.mode = b.dataset.mode;
+    settings.mode = S.mode;
+    persist();
+    audio.play('click');
+    refreshMenu();
+    resetWorld();
+  });
+
+$('btn-play').addEventListener('click', startRun);
+$('btn-skins').addEventListener('click', () => openModal('skins'));
+$('btn-settings').addEventListener('click', () => openModal('settings'));
+$('btn-help').addEventListener('click', () => openModal('help'));
+$('modal-close').addEventListener('click', closeModal);
+$('modal').addEventListener('pointerdown', (e) => {
+  if (e.target === $('modal')) closeModal();
+});
+$('btn-resume').addEventListener('click', resumeGame);
+$('btn-restart').addEventListener('click', startRun);
+$('btn-pause-settings').addEventListener('click', () => openModal('settings'));
+$('btn-quit').addEventListener('click', toMenu);
+$('btn-retry').addEventListener('click', startRun);
+$('btn-over-menu').addEventListener('click', toMenu);
+$('btn-pause').addEventListener('click', pauseGame);
+
+function syncSettingsUI() {
+  $('set-quality').value = settings.quality;
+  $('set-music').value = settings.music;
+  $('set-sfx').value = settings.sfx;
+  $('set-sens').value = settings.sensitivity;
+  $('set-shake').checked = settings.shake;
+  $('set-fps').checked = settings.showFps;
+}
+$('set-quality').addEventListener('change', (e) => {
+  settings.quality = e.target.value;
+  quality = settings.quality === 'auto' ? autoDefault() : settings.quality;
+  applyQuality();
+  persist();
+});
+$('set-music').addEventListener('input', (e) => {
+  settings.music = +e.target.value;
+  audio.setVolumes(settings.sfx, settings.music);
+  if (settings.music > 0) {
+    unlockAudio();
+  }
+  persist();
+});
+$('set-sfx').addEventListener('input', (e) => {
+  settings.sfx = +e.target.value;
+  audio.setVolumes(settings.sfx, settings.music);
+  persist();
+});
+$('set-sfx').addEventListener('change', () => audio.play('gem', 2));
+$('set-sens').addEventListener('input', (e) => {
+  settings.sensitivity = +e.target.value;
+  persist();
+});
+$('set-shake').addEventListener('change', (e) => {
+  settings.shake = e.target.checked;
+  persist();
+});
+$('set-fps').addEventListener('change', (e) => {
+  settings.showFps = e.target.checked;
+  $('fps').textContent = '';
+  persist();
+});
+$('btn-reset').addEventListener('click', () => {
+  if (!confirm('Reset best scores, gems and skins?')) return;
+  save = resetSave();
+  Object.assign(settings, save.settings);
+  save.settings = settings;
+  persist();
+  applySkin(save.skin);
+  syncSettingsUI();
+  refreshMenu();
+});
+
+function buildSkins() {
+  $('skins-gems').textContent = save.gems;
+  const grid = $('skin-grid');
+  grid.innerHTML = '';
+  for (const sk of SKINS) {
+    const owned = save.owned.includes(sk.id);
+    const el = document.createElement('button');
+    el.className = 'skin' + (owned ? '' : ' locked') + (save.skin === sk.id ? ' selected' : '');
+    el.appendChild(skinPreview(sk.id));
+    const name = document.createElement('div');
+    name.textContent = sk.name;
+    el.appendChild(name);
+    const sub = document.createElement('small');
+    sub.innerHTML = save.skin === sk.id ? 'EQUIPPED' : owned ? 'Tap to equip' : `<i class="gem-ico"></i> ${sk.price}`;
+    el.appendChild(sub);
+    el.addEventListener('click', () => {
+      if (owned) {
+        save.skin = sk.id;
+        applySkin(sk.id);
+        audio.play('click');
+      } else if (save.gems >= sk.price) {
+        save.gems -= sk.price;
+        save.owned.push(sk.id);
+        save.skin = sk.id;
+        applySkin(sk.id);
+        audio.play('buy');
+      } else {
+        audio.play('deny');
+        el.animate([{ transform: 'translateX(-4px)' }, { transform: 'translateX(4px)' }, { transform: 'translateX(0)' }], { duration: 180 });
+        return;
+      }
+      persist();
+      refreshMenu();
+      buildSkins();
+    });
+    grid.appendChild(el);
+  }
+}
+
+function fatal(msg) {
+  const el = document.getElementById('err');
+  document.getElementById('err-msg').textContent = msg;
+  for (const s of document.querySelectorAll('.screen')) s.classList.remove('show');
+  el.classList.add('show');
+}
+
+// ============================================================================ main loop
+let last = performance.now();
+let fpsFrames = 0,
+  fpsTime = 0,
+  perfTime = 0,
+  perfFrames = 0,
+  lowStrikes = 0;
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  let dt = Math.min((now - last) / 1000, 0.1);
+  last = now;
+  pollGamepad();
+
+  fpsFrames++;
+  fpsTime += dt;
+  if (fpsTime >= 0.5) {
+    if (settings.showFps) $('fps').textContent = Math.round(fpsFrames / fpsTime) + ' fps · ' + quality;
+    fpsFrames = 0;
+    fpsTime = 0;
+  }
+
+  if (S.state === 'playing') {
+    S.acc += dt;
+    let steps = 0;
+    while (S.acc >= STEP && steps < 12) {
+      ball.prev.copy(ball.pos);
+      stepBall(STEP);
+      S.acc -= STEP;
+      steps++;
+      if (S.state !== 'playing') break;
+    }
+    if (steps >= 12) S.acc = 0;
+    S.runTime += dt;
+    S.time += dt;
+    S.score = Math.floor(S.distance / SCORE_DIV);
+    const lvl = Math.floor(S.score / LEVEL_EVERY);
+    if (lvl > S.level) {
+      S.level = lvl;
+      theme.target = lvl;
+      setUiTheme(lvl);
+      audio.intensity = lvl;
+      audio.play('level');
+      banner('LEVEL ' + (lvl + 1));
+    }
+    renderPos.lerpVectors(ball.prev, ball.pos, THREE.MathUtils.clamp(S.acc / STEP, 0, 1));
+    audio.setMotion(ball.grounded, -ball.vel.z, true);
+    updateHud();
+    autoQuality(dt);
+  } else if (S.state === 'dead') {
+    S.deadTimer += dt;
+    S.slowmo = damp(S.slowmo, 1, 2, dt);
+    const sdt = dt * S.slowmo;
+    S.time += sdt;
+    if (S.cause === 'fall') {
+      ball.vel.y -= GRAVITY * sdt;
+      ball.pos.addScaledVector(ball.vel, sdt);
+      renderPos.copy(ball.pos);
+    }
+    dt = sdt;
+  } else if (S.state === 'menu') {
+    S.time += dt;
+    renderPos.copy(ball.pos);
+  }
+
+  if (S.state !== 'paused') {
+    track.update(ball.pos.z);
+    track.animate(S.time);
+    maybeRecenter();
+    updateTheme(dt);
+    updateCamera(dt);
+    updateVisuals(dt);
+  }
+
+  renderer.render(scene, camera);
+}
+
+function autoQuality(dt) {
+  if (settings.quality !== 'auto') return;
+  perfTime += dt;
+  perfFrames++;
+  if (perfTime < 2.5) return;
+  const fps = perfFrames / perfTime;
+  perfTime = 0;
+  perfFrames = 0;
+  if (fps < 45 && quality !== 'low') {
+    lowStrikes++;
+    if (lowStrikes >= 2) {
+      quality = quality === 'high' ? 'medium' : 'low';
+      save.autoLevel = quality;
+      persist();
+      applyQuality();
+      lowStrikes = 0;
+    }
+  } else lowStrikes = 0;
+}
+
+// ============================================================================ boot
+try {
+  resetWorld();
+  refreshMenu();
+  // warm up shaders so the first frame of play doesn't hitch
+  renderer.compile(scene, camera);
+  showScreen('menu');
+  requestAnimationFrame((t) => {
+    last = t;
+    frame(t);
+  });
+} catch (e) {
+  console.error(e);
+  fatal('Something went wrong while starting: ' + e.message);
+}
+
+renderer.domElement.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault();
+  if (S.state === 'playing') pauseGame();
+});
+
+// debug / testing hooks
+window.__slope = { S, ball, track, startRun, camera, pools, THREE };

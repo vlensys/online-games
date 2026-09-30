@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Online Games Arcade</title>
+    <meta name="description" content="Free browser games — no downloads, works on Chrome, Firefox and Chromebooks." />
+    <meta name="theme-color" content="#05050d" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2305050d'/%3E%3Cpath d='M14 40h36M22 32v16M42 34a3 3 0 1 0 0.1 0M48 40a3 3 0 1 0 0.1 0' stroke='%23ff4fd8' stroke-width='5' stroke-linecap='round' fill='none'/%3E%3C/svg%3E" />
+    <style>
+      :root {
+        --bg: #05050d;
+        --card: #0d0d1a;
+        --text: #eef0ff;
+        --muted: #8b8fb0;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Ubuntu, Arial, sans-serif;
+      }
+      body {
+        background:
+          radial-gradient(900px 500px at 15% -10%, rgba(57, 255, 136, 0.12), transparent 60%),
+          radial-gradient(900px 500px at 85% -10%, rgba(255, 79, 216, 0.12), transparent 60%),
+          radial-gradient(700px 500px at 50% 110%, rgba(61, 125, 255, 0.12), transparent 60%),
+          var(--bg);
+        min-height: 100vh;
+      }
+      header {
+        text-align: center;
+        padding: 56px 16px 18px;
+      }
+      h1 {
+        margin: 0;
+        font-size: clamp(38px, 7vw, 72px);
+        font-weight: 900;
+        font-style: italic;
+        letter-spacing: 0.04em;
+        text-shadow:
+          0 0 18px rgba(255, 255, 255, 0.25),
+          0 0 50px rgba(255, 79, 216, 0.35);
+      }
+      header p {
+        color: var(--muted);
+        margin: 10px 0 0;
+        font-size: 17px;
+      }
+      main {
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 20px 16px 60px;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: 22px;
+      }
+      .card {
+        --c: #39ff88;
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        border-radius: 22px;
+        overflow: hidden;
+        background: var(--card);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        text-decoration: none;
+        color: inherit;
+        transition:
+          transform 0.15s ease,
+          border-color 0.15s ease,
+          box-shadow 0.2s ease;
+      }
+      .card:hover,
+      .card:focus-visible {
+        transform: translateY(-4px);
+        border-color: var(--c);
+        box-shadow: 0 0 40px color-mix(in srgb, var(--c) 35%, transparent);
+        outline: none;
+      }
+      .art {
+        height: 190px;
+        position: relative;
+        overflow: hidden;
+      }
+      .art svg {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      .body {
+        padding: 18px 20px 22px;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+      }
+      .body h2 {
+        margin: 0 0 6px;
+        font-size: 26px;
+        font-style: italic;
+        letter-spacing: 0.04em;
+      }
+      .body p {
+        margin: 0 0 14px;
+        color: var(--muted);
+        line-height: 1.45;
+        flex: 1;
+      }
+      .tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .tags span {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        padding: 4px 9px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.06);
+        color: #cfd3f5;
+      }
+      .play {
+        position: absolute;
+        top: 14px;
+        right: 14px;
+        background: var(--c);
+        color: #05050d;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+        border-radius: 999px;
+        padding: 7px 14px;
+        font-size: 13px;
+      }
+      .soon {
+        opacity: 0.55;
+        pointer-events: none;
+      }
+      .soon .play {
+        background: #444;
+        color: #ddd;
+      }
+      footer {
+        text-align: center;
+        color: var(--muted);
+        font-size: 13px;
+        padding: 0 16px 40px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>ONLINE GAMES</h1>
+      <p>Free 3D browser games. No downloads, no accounts — runs on Chrome, Firefox &amp; Chromebooks.</p>
+    </header>
+    <main>
+      <a class="card" href="slope/" style="--c: #39ff88">
+        <div class="art">
+          <svg viewBox="0 0 400 190" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+            <defs>
+              <linearGradient id="sg" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#02020a" />
+                <stop offset="1" stop-color="#062414" />
+              </linearGradient>
+              <radialGradient id="sb" cx="0.4" cy="0.35" r="0.7">
+                <stop offset="0" stop-color="#e9fff3" />
+                <stop offset="1" stop-color="#3b4a55" />
+              </radialGradient>
+            </defs>
+            <rect width="400" height="190" fill="url(#sg)" />
+            <g stroke="#39ff88" stroke-width="2" fill="rgba(57,255,136,0.06)">
+              <path d="M150 40 L250 40 L400 190 L0 190 Z" />
+            </g>
+            <g stroke="#39ff88" stroke-opacity="0.45" stroke-width="1">
+              <path d="M200 40 L200 190 M175 40 L100 190 M225 40 L300 190 M160 60 L240 60 M140 85 L260 85 M110 120 L290 120 M70 160 L330 160" />
+            </g>
+            <rect x="245" y="95" width="22" height="22" fill="#ff1f4b" stroke="#ff8aa0" stroke-width="2" />
+            <rect x="150" y="70" width="16" height="16" fill="#ff1f4b" stroke="#ff8aa0" stroke-width="2" />
+            <circle cx="190" cy="150" r="20" fill="url(#sb)" />
+          </svg>
+          <span class="play">PLAY</span>
+        </div>
+        <div class="body">
+          <h2>SLOPE+</h2>
+          <p>The classic endless neon slope — smoother, sharper and fairer. Now with jump, dash-through-walls, shields, levels and unlockable ball skins.</p>
+          <div class="tags"><span>ARCADE</span><span>ENDLESS</span><span>1 PLAYER</span></div>
+        </div>
+      </a>
+
+      <a class="card soon" href="storm/" style="--c: #b36bff" aria-disabled="true">
+        <div class="art">
+          <svg viewBox="0 0 400 190" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+            <rect width="400" height="190" fill="#140a26" />
+            <circle cx="200" cy="260" r="200" fill="none" stroke="#b36bff" stroke-width="10" stroke-opacity="0.5" />
+            <path d="M0 150 Q100 120 200 140 T400 130 L400 190 L0 190Z" fill="#1d5a2c" />
+            <rect x="120" y="95" width="40" height="45" fill="#6b4a2b" />
+            <path d="M115 95 L140 75 L165 95Z" fill="#8a3b2b" />
+            <path d="M240 140 L280 100 L320 140Z" fill="none" stroke="#c9a36b" stroke-width="5" />
+          </svg>
+          <span class="play">SOON</span>
+        </div>
+        <div class="body">
+          <h2>STORM ROYALE</h2>
+          <p>3D battle royale: drop in, loot, build, and be the last one standing against smart bots — or host a private online match for friends.</p>
+          <div class="tags"><span>BATTLE ROYALE</span><span>BUILDING</span><span>ONLINE</span></div>
+        </div>
+      </a>
+
+      <a class="card soon" href="#" style="--c: #ffb000" aria-disabled="true">
+        <div class="art">
+          <svg viewBox="0 0 400 190" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+            <rect width="400" height="190" fill="#1a1204" />
+            <path d="M0 190 L140 60 L260 60 L400 190Z" fill="#2a2a30" />
+            <path d="M200 60 L200 190" stroke="#ffb000" stroke-width="4" stroke-dasharray="14 12" />
+          </svg>
+          <span class="play">SOON</span>
+        </div>
+        <div class="body">
+          <h2>GAME 3</h2>
+          <p>Coming soon.</p>
+          <div class="tags"><span>SOON</span></div>
+        </div>
+      </a>
+    </main>
+    <footer>Made with three.js · Progress is saved in your browser</footer>
+  </body>
+</html>
