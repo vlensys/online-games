@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#1b3f8f" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <title>Storm Royale</title>
+    <meta name="description" content="Storm Royale: a free 3D battle royale with building, bots and private online games. Runs in the browser." />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231b3f8f'/%3E%3Cpath d='M18 46 L32 14 L46 46 L32 38 Z' fill='%23ffd23f'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="css/storm.css" />
+    <script type="importmap">
+      { "imports": { "three": "../lib/three.module.min.js", "three/addons/": "../lib/addons/" } }
+    </script>
+    <script src="../lib/peerjs.min.js"></script>
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+
+    <!-- ====================================================== HUD -->
+    <div id="hud" class="hidden">
+      <div id="stormTint"></div>
+      <div id="scope" class="hidden"><div class="scope-ring"></div></div>
+      <div id="dmgDirs"></div>
+      <div id="nums"></div>
+
+      <div id="topRight">
+        <canvas id="minimap" width="200" height="200"></canvas>
+        <div id="infoRow">
+          <div class="info" id="stormInfo"><span class="ico ico-storm"></span><span id="stormTimer">0:00</span></div>
+          <div class="info"><span class="ico ico-players"></span><span id="aliveCount">0</span></div>
+          <div class="info"><span class="ico ico-kills"></span><span id="killCount">0</span></div>
+        </div>
+        <div id="stormMsg"></div>
+      </div>
+
+      <div id="killfeed"></div>
+      <div id="alerts"></div>
+      <div id="bigMsg" class="hidden"></div>
+
+      <div id="crosshair"><i class="ch-t"></i><i class="ch-b"></i><i class="ch-l"></i><i class="ch-r"></i><i class="ch-dot"></i></div>
+      <div id="hitmarker" class="hidden"><i></i><i></i><i></i><i></i></div>
+      <div id="prompt" class="hidden"><span class="key" id="promptKey">E</span><span id="promptText"></span></div>
+      <div id="progress" class="hidden"><div id="progressLabel"></div><div class="bar"><div id="progressFill"></div></div></div>
+      <div id="pieceHp" class="hidden"><div class="bar"><div id="pieceHpFill"></div></div><span id="pieceHpText"></span></div>
+
+      <div id="vitals">
+        <div class="vbar shield"><div class="fill" id="shieldFill"></div><span id="shieldText">0</span></div>
+        <div class="vbar health"><div class="fill" id="healthFill"></div><span id="healthText">100</span></div>
+      </div>
+
+      <div id="bottomRight">
+        <div id="resources">
+          <div class="res" data-m="0"><span class="mat wood"></span><span id="mat0">0</span></div>
+          <div class="res" data-m="1"><span class="mat brick"></span><span id="mat1">0</span></div>
+          <div class="res" data-m="2"><span class="mat metal"></span><span id="mat2">0</span></div>
+          <div class="res ammo"><span class="ammo-dot"></span><span id="ammoReserve">0</span></div>
+        </div>
+        <div id="hotbar"></div>
+        <div id="buildbar" class="hidden"></div>
+      </div>
+
+      <div id="spectate" class="hidden">
+        <div class="spec-label">SPECTATING</div>
+        <div id="specName"></div>
+        <div class="spec-hint" id="specHint">Click / Space for next player</div>
+      </div>
+      <div id="busHint" class="hidden"><span class="key">SPACE</span> Jump from the bus</div>
+      <div id="fps" class="hidden"></div>
+      <div id="netStatus" class="hidden"></div>
+    </div>
+
+    <!-- ====================================================== touch controls -->
+    <div id="touch" class="hidden">
+      <div id="joyZone"><div id="joyBase"><div id="joyKnob"></div></div></div>
+      <div id="lookZone"></div>
+      <button class="tbtn big" id="tFire" data-a="fire">FIRE</button>
+      <button class="tbtn" id="tFire2" data-a="fire">FIRE</button>
+      <button class="tbtn" id="tAim" data-a="aim">AIM</button>
+      <button class="tbtn" id="tJump" data-a="jump">JUMP</button>
+      <button class="tbtn" id="tCrouch" data-a="crouch">CROUCH</button>
+      <button class="tbtn" id="tReload" data-a="reload">RELOAD</button>
+      <button class="tbtn" id="tBuild" data-a="build">BUILD</button>
+      <button class="tbtn hidden" id="tUse" data-a="use">USE</button>
+      <div id="tPieces" class="hidden">
+        <button class="tbtn piece" data-a="p0">WALL</button>
+        <button class="tbtn piece" data-a="p1">FLOOR</button>
+        <button class="tbtn piece" data-a="p2">STAIRS</button>
+        <button class="tbtn piece" data-a="p3">ROOF</button>
+        <button class="tbtn piece" data-a="rotate">ROTATE</button>
+        <button class="tbtn piece" data-a="mat">MAT</button>
+      </div>
+      <button class="tbtn small" id="tMap" data-a="map">MAP</button>
+      <button class="tbtn small" id="tPause" data-a="pause">II</button>
+    </div>
+
+    <!-- ====================================================== full map -->
+    <div id="fullmap" class="hidden">
+      <canvas id="bigmap" width="900" height="900"></canvas>
+      <div class="map-hint">M / tap to close</div>
+    </div>
+
+    <!-- ====================================================== menus -->
+    <div id="menu">
+      <div id="menuMain" class="screen">
+        <div class="brand">
+          <div class="logo">STORM<br /><span>ROYALE</span></div>
+          <div class="tagline">Drop in. Loot up. Build. Be the last one standing.</div>
+        </div>
+        <div class="main-buttons">
+          <button class="btn primary" data-go="solo">PLAY SOLO</button>
+          <button class="btn" data-go="host">HOST PRIVATE GAME</button>
+          <button class="btn" data-go="join">JOIN GAME</button>
+          <div class="row2">
+            <button class="btn small" data-go="settings">SETTINGS</button>
+            <button class="btn small" data-go="controls">CONTROLS</button>
+          </div>
+          <a class="btn small ghost" href="../">&#8592; ARCADE</a>
+        </div>
+        <div class="name-box">
+          <label>Your name <input id="playerName" maxlength="16" autocomplete="off" spellcheck="false" /></label>
+        </div>
+      </div>
+
+      <div id="menuSolo" class="screen panel hidden">
+        <h2>PLAY SOLO</h2>
+        <div class="form">
+          <label>Bots <span class="val" id="soloBotsVal">24</span><input type="range" id="soloBots" min="0" max="59" value="24" /></label>
+          <label>Bot difficulty <select id="soloDiff"><option value="0">Easy</option><option value="1">Normal</option><option value="2">Hard</option></select></label>
+          <label>Loot <select id="soloLoot"><option value="scarce">Scarce</option><option value="normal">Normal</option><option value="plentiful">Plentiful</option><option value="legendary">Legendary only</option></select></label>
+          <label>Storm speed <select id="soloStorm"><option value="slow">Slow</option><option value="normal">Normal</option><option value="fast">Fast</option></select></label>
+        </div>
+        <div class="actions">
+          <button class="btn ghost" data-go="main">BACK</button>
+          <button class="btn primary" id="soloStart">START MATCH</button>
+        </div>
+      </div>
+
+      <div id="menuHost" class="screen panel wide hidden">
+        <h2>HOST PRIVATE GAME</h2>
+        <div class="host-grid">
+          <div class="host-col">
+            <div class="addr-box">
+              <div class="addr-label">SERVER ADDRESS</div>
+              <div class="addr-row">
+                <code id="hostAddr">starting&#8230;</code>
+                <button class="btn tiny" id="hostShow">SHOW</button>
+                <button class="btn tiny" id="hostCopy">COPY</button>
+              </div>
+              <div class="addr-status" id="hostStatus">Opening server&#8230;</div>
+            </div>
+            <div class="form">
+              <label>Password <input id="hostPw" maxlength="32" autocomplete="off" placeholder="(none)" /></label>
+              <label>Bots <span class="val" id="hostBotsVal">20</span><input type="range" id="hostBots" min="0" max="59" value="20" /></label>
+              <label>Loot rarity <select id="hostLoot"><option value="scarce">Scarce</option><option value="normal">Normal</option><option value="plentiful">Plentiful</option><option value="legendary">Legendary only</option></select></label>
+              <label>Max players <select id="hostMax"><option>2</option><option>4</option><option selected>8</option><option>12</option><option>16</option></select></label>
+              <label>Bot difficulty <select id="hostDiff"><option value="0">Easy</option><option value="1">Normal</option><option value="2">Hard</option></select></label>
+              <label>Storm speed <select id="hostStorm"><option value="slow">Slow</option><option value="normal">Normal</option><option value="fast">Fast</option></select></label>
+            </div>
+            <details class="adv">
+              <summary>Advanced connection settings</summary>
+              <div class="form">
+                <label>Signaling server (PeerJS) <input id="advPeer" placeholder="default: PeerJS cloud" autocomplete="off" /></label>
+                <label>TURN server <input id="advTurn" placeholder="turn:host:3478 (optional)" autocomplete="off" /></label>
+                <label>TURN user <input id="advTurnUser" autocomplete="off" /></label>
+                <label>TURN password <input id="advTurnPass" type="password" autocomplete="off" /></label>
+              </div>
+            </details>
+          </div>
+          <div class="host-col">
+            <div class="lobby-title">PLAYERS <span id="hostCount">0</span></div>
+            <ul id="hostLobby" class="lobby"></ul>
+            <p class="note">The match runs on this computer. Friends join with the address and password over the internet (peer-to-peer). Some school or office networks block peer-to-peer connections.</p>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn ghost" id="hostBack">CLOSE SERVER</button>
+          <button class="btn primary" id="hostStart">START MATCH</button>
+        </div>
+      </div>
+
+      <div id="menuJoin" class="screen panel hidden">
+        <h2>JOIN GAME</h2>
+        <div class="form">
+          <label>Server address <input id="joinAddr" placeholder="203.0.113.7:48213" autocomplete="off" spellcheck="false" /></label>
+          <label>Password <input id="joinPw" type="password" autocomplete="off" /></label>
+        </div>
+        <details class="adv">
+          <summary>Advanced connection settings</summary>
+          <div class="form">
+            <label>Signaling server (PeerJS) <input id="advPeer2" placeholder="default: PeerJS cloud" autocomplete="off" /></label>
+            <label>TURN server <input id="advTurn2" placeholder="turn:host:3478 (optional)" autocomplete="off" /></label>
+            <label>TURN user <input id="advTurnUser2" autocomplete="off" /></label>
+            <label>TURN password <input id="advTurnPass2" type="password" autocomplete="off" /></label>
+          </div>
+        </details>
+        <div class="status" id="joinStatus"></div>
+        <div class="actions">
+          <button class="btn ghost" data-go="main">BACK</button>
+          <button class="btn primary" id="joinGo">JOIN</button>
+        </div>
+      </div>
+
+      <div id="menuLobby" class="screen panel hidden">
+        <h2>LOBBY</h2>
+        <div class="lobby-info" id="lobbyInfo"></div>
+        <ul id="clientLobby" class="lobby"></ul>
+        <div class="status">Waiting for the host to start the match&#8230;</div>
+        <div class="actions">
+          <button class="btn ghost" id="lobbyLeave">LEAVE</button>
+        </div>
+      </div>
+
+      <div id="menuSettings" class="screen panel hidden">
+        <h2>SETTINGS</h2>
+        <div class="form two">
+          <label>Mouse sensitivity <span class="val" id="setSensVal"></span><input type="range" id="setSens" min="0.2" max="3" step="0.05" /></label>
+          <label>Aim (ADS) sensitivity <span class="val" id="setAdsVal"></span><input type="range" id="setAds" min="0.2" max="1.5" step="0.05" /></label>
+          <label>Touch look sensitivity <span class="val" id="setTouchVal"></span><input type="range" id="setTouch" min="0.3" max="3" step="0.05" /></label>
+          <label>Field of view <span class="val" id="setFovVal"></span><input type="range" id="setFov" min="70" max="110" step="1" /></label>
+          <label>Graphics <select id="setQuality"><option value="auto">Auto</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
+          <label>Volume <span class="val" id="setVolVal"></span><input type="range" id="setVol" min="0" max="1" step="0.05" /></label>
+          <label class="check"><input type="checkbox" id="setInvert" /> Invert look Y</label>
+          <label class="check"><input type="checkbox" id="setFps" /> Show FPS</label>
+          <label class="check"><input type="checkbox" id="setAutoFire" /> Touch: auto-fire on target</label>
+          <label class="check"><input type="checkbox" id="setStreamer" /> Streamer mode (hide server address)</label>
+        </div>
+        <div class="actions">
+          <button class="btn primary" id="setDone">DONE</button>
+        </div>
+      </div>
+
+      <div id="menuControls" class="screen panel wide hidden">
+        <h2>CONTROLS</h2>
+        <div class="controls-grid">
+          <div>
+            <h3>Keyboard &amp; mouse</h3>
+            <table class="keys">
+              <tr><td>Move</td><td><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></td></tr>
+              <tr><td>Look / aim</td><td>Mouse (click the game to lock the cursor)</td></tr>
+              <tr><td>Fire / place build</td><td>Left mouse</td></tr>
+              <tr><td>Aim down sights</td><td>Right mouse</td></tr>
+              <tr><td>Jump / deploy glider / leave bus</td><td><kbd>Space</kbd></td></tr>
+              <tr><td>Sprint</td><td><kbd>Shift</kbd> (hold)</td></tr>
+              <tr><td>Crouch</td><td><kbd>C</kbd></td></tr>
+              <tr><td>Reload</td><td><kbd>R</kbd></td></tr>
+              <tr><td>Interact (loot, chests)</td><td><kbd>E</kbd></td></tr>
+              <tr><td>Pickaxe</td><td><kbd>1</kbd></td></tr>
+              <tr><td>Inventory slots</td><td><kbd>2</kbd>&#8211;<kbd>6</kbd>, mouse wheel</td></tr>
+              <tr><td>Wall / Floor / Stairs / Roof</td><td><kbd>Q</kbd> <kbd>Z</kbd> <kbd>X</kbd> <kbd>V</kbd></td></tr>
+              <tr><td>Build mode on/off</td><td><kbd>B</kbd> or <kbd>F</kbd></td></tr>
+              <tr><td>Rotate piece (build mode)</td><td><kbd>R</kbd> or <kbd>G</kbd></td></tr>
+              <tr><td>Change material (build mode)</td><td>Right mouse or <kbd>T</kbd></td></tr>
+              <tr><td>Map</td><td><kbd>M</kbd></td></tr>
+              <tr><td>Pause / release mouse</td><td><kbd>Esc</kbd> or <kbd>P</kbd></td></tr>
+            </table>
+          </div>
+          <div>
+            <h3>Touch</h3>
+            <table class="keys">
+              <tr><td>Move</td><td>Left thumb joystick (push to the edge to sprint)</td></tr>
+              <tr><td>Look</td><td>Drag anywhere on the right side</td></tr>
+              <tr><td>Fire</td><td>FIRE (hold; drag it to aim while shooting)</td></tr>
+              <tr><td>Aim / jump / crouch / reload</td><td>AIM, JUMP, CROUCH, RELOAD</td></tr>
+              <tr><td>Loot &amp; chests</td><td>USE (appears when something is close)</td></tr>
+              <tr><td>Build</td><td>BUILD, then WALL / FLOOR / STAIRS / ROOF and PLACE</td></tr>
+              <tr><td>Weapons</td><td>Tap the hotbar</td></tr>
+              <tr><td>Map / pause</td><td>MAP, II</td></tr>
+            </table>
+            <h3>Tips</h3>
+            <ul class="tips">
+              <li>Shields absorb damage first. The storm and falls ignore shields.</li>
+              <li>Hit trees, walls and cars with the pickaxe to collect wood, brick and metal.</li>
+              <li>Golden chests always hold a weapon. Eliminated players drop everything.</li>
+              <li>Stay inside the white circle on the map when the storm closes in.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn primary" data-go="back">BACK</button>
+        </div>
+      </div>
+
+      <div id="menuLoading" class="screen hidden">
+        <div class="loading-box">
+          <div class="spinner"></div>
+          <div id="loadingText">Loading&#8230;</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ====================================================== overlays -->
+    <div id="pause" class="overlay hidden">
+      <div class="panel">
+        <h2>PAUSED</h2>
+        <p class="sub" id="pauseSub">The match keeps running.</p>
+        <div class="stack">
+          <button class="btn primary" id="pauseResume">RESUME</button>
+          <button class="btn" id="pauseSettings">SETTINGS</button>
+          <button class="btn" id="pauseControls">CONTROLS</button>
+          <button class="btn ghost" id="pauseLeave">LEAVE MATCH</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="results" class="overlay hidden">
+      <div class="panel results">
+        <div class="place" id="resPlace">#1</div>
+        <div class="res-title" id="resTitle">STORM CHAMPION</div>
+        <div class="res-sub" id="resSub"></div>
+        <div class="res-stats">
+          <div><b id="resKills">0</b><span>ELIMINATIONS</span></div>
+          <div><b id="resDmg">0</b><span>DAMAGE</span></div>
+          <div><b id="resTime">0:00</b><span>SURVIVED</span></div>
+        </div>
+        <ol class="res-top" id="resTop"></ol>
+        <div class="stack row">
+          <button class="btn" id="resSpectate">SPECTATE</button>
+          <button class="btn primary" id="resAgain">PLAY AGAIN</button>
+          <button class="btn ghost" id="resMenu">MAIN MENU</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="rotate" class="overlay hidden">
+      <div class="rotate-box">
+        <div class="phone"></div>
+        <p>Turn your device sideways to play</p>
+      </div>
+    </div>
+
+    <div id="fatal" class="overlay hidden">
+      <div class="panel">
+        <h2>CAN'T START THE GAME</h2>
+        <p id="fatalText">Your browser could not start WebGL.</p>
+        <div class="stack"><a class="btn" href="../">BACK TO ARCADE</a></div>
+      </div>
+    </div>
+
+    <div id="toast" class="hidden"></div>
+
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>
