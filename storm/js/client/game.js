@@ -324,9 +324,15 @@ export class Game {
       case 'ux':
         me.use = null;
         break;
-      case 'got':
+      case 'got': {
         this.sfx.pickup();
+        const t = m.it;
+        let label = C.itemName(t, m.r);
+        let col = C.isWeapon(t) || C.isConsumable(t) ? C.RARITY[m.r].color : t.startsWith('a_') ? C.AMMO[t.slice(2)].color : C.MATERIALS.find((x) => 'm_' + x.key === t).color;
+        if (!C.isWeapon(t)) label = '+' + m.n + ' ' + label;
+        this.hud.pickup(label, col);
         break;
+      }
       case 'hv':
         if (me.lastHitPos) this.hud.number(me.lastHitPos[0], me.lastHitPos[1] + 0.4, me.lastHitPos[2], '+' + m.n, 'mat');
         break;
@@ -381,7 +387,10 @@ export class Game {
       pl.vis = true;
       pl.alive = true;
     }
-    for (const pl of this.players.values()) if (pl.vis && !seen.has(pl.id)) pl.vis = false;
+    for (const pl of this.players.values()) {
+      if (seen.has(pl.id)) pl.seenT = m.T;
+      else if (pl.vis && m.T - (pl.seenT || 0) > 0.35) pl.vis = false;
+    }
   }
 
   onInv(m) {
@@ -435,6 +444,7 @@ export class Game {
     }
     me.hp = Math.max(0, me.hp - d);
     this.shake = Math.max(this.shake, Math.min(0.25, m.d / 200));
+    this.hurtT = Math.min(1, (this.hurtT || 0) + 0.25 + m.d / 60);
   }
 
   onHitConfirm(m) {
@@ -742,6 +752,12 @@ export class Game {
       A.lookY += dy * ts;
     }
     if (this.S.invertY) A.lookY = -A.lookY;
+    if (this.o.inputBlocked && this.o.inputBlocked()) {
+      // pause/settings overlay open: the match runs on, but the player stands still
+      for (const k of Object.keys(A)) if (typeof A[k] === 'boolean') A[k] = false;
+      A.fwd = A.right = A.lookX = A.lookY = A.wheel = 0;
+      A.slot = A.piece = -1;
+    }
     I.endFrame();
     T.endFrame();
     void dt;
@@ -1047,7 +1063,11 @@ export class Game {
         up = 0.3 - 0.05 * me.adsT;
       }
     }
-    this.adsZoom = zoom;
+    // a touch wider while sprinting on the ground
+    const sprinting = me.alive && c.mode === M_GROUND && me.inp.sprint && Math.hypot(c.vx, c.vz) > 6;
+    this.sprintK = (this.sprintK || 0) + ((sprinting ? 1 : 0) - (this.sprintK || 0)) * Math.min(1, dt * 6);
+    if (zoom <= 1.001) zoom = 1 / (1 + 0.07 * this.sprintK);
+    this.adsZoom = Math.max(1, zoom);
     // recoil + shake
     pitch += me.recoil;
     me.recoil *= Math.exp(-dt * 9);
@@ -1100,6 +1120,16 @@ export class Game {
         }
         want.set(pivot.x + bx * bestT, pivot.y + by * bestT, pivot.z + bz * bestT);
         this.camNear = bestT;
+        // keep the near plane out of walls/floors right beside the camera
+        const W = this.world;
+        if (W.pushOut(want.x, want.z, want.y - 0.3, want.y + 0.3, 0.3)) {
+          want.x = W._n[0];
+          want.z = W._n[1];
+        }
+        const gy = W.groundAt(want.x, want.z, want.y, 0.25, 1.2);
+        if (want.y - gy < 0.3) want.y = gy + 0.3;
+        const cy = W.ceilingAt(want.x, want.z, want.y, 0.25);
+        if (cy - want.y < 0.25 && cy - 0.25 > gy + 0.3) want.y = cy - 0.25;
         const wh = this.world.terrain.heightAt(want.x, want.z);
         if (want.y < wh + 0.3) want.y = wh + 0.3;
         if (want.y < 0.35 && wh < 0) want.y = Math.max(want.y, 0.35);
@@ -1121,7 +1151,7 @@ export class Game {
     const h = (this.S.fov * Math.PI) / 180;
     let v = (2 * Math.atan(Math.tan(h / 2) / Math.max(1, cam.aspect)) * 180) / Math.PI;
     v = Math.max(40, Math.min(90, v));
-    const target = zoom > 1.01 ? (2 * Math.atan(Math.tan((v * Math.PI) / 360) / zoom) * 180) / Math.PI : v;
+    const target = Math.abs(zoom - 1) > 0.002 ? (2 * Math.atan(Math.tan((v * Math.PI) / 360) / zoom) * 180) / Math.PI : v;
     if (Math.abs(cam.fov - target) > 0.01) {
       cam.fov = target;
       cam.updateProjectionMatrix();
@@ -1525,6 +1555,9 @@ export class Game {
     const vp = this.viewPos();
     const inStorm = me.c.mode !== M_BUS && outsideStorm(s, vp.x, vp.z) && this.state !== 'wait';
     hud.tint(inStorm);
+    if (this.hurtT > 0) this.hurtT = Math.max(0, this.hurtT - dt * 1.6);
+    const hurt = Math.max(this.hurtT || 0, me.alive && me.hp < 30 && me.c.mode === M_GROUND ? 0.25 : 0);
+    hud.set('hurt', Math.round(hurt * 20), (v) => (document.getElementById('hurtFx').style.opacity = String(v / 20)));
     // minimap (10 Hz)
     this.mapT -= dt;
     if (this.mapT <= 0) {
@@ -1582,6 +1615,7 @@ export class Game {
     else hud.spectate(null);
     // touch buttons state
     document.body.classList.toggle('building', !!(me.build && me.alive));
+    hud.toggle('lockHint', !touch && !this.input.locked && !(this.o.inputBlocked && this.o.inputBlocked()) && !this.result && !this.mapOpen && this.state !== 'wait');
     if (touch) {
       document.getElementById('tBuild').classList.toggle('on', me.build);
       document.getElementById('tAim').classList.toggle('on', !!this.touchAds);
@@ -1605,6 +1639,20 @@ export class Game {
     const air = me.alive && (c.mode === M_FALL || c.mode === M_GLIDE);
     this.sfx.loop('wind', air ? (c.mode === M_FALL ? 0.35 + Math.min(0.3, -c.vy / 100) : 0.18) : 0);
     this.sfx.loop('bus', me.alive && c.mode === M_BUS && this.state !== 'wait' ? 0.12 : 0);
+    // unopened chests hum softly when you're close
+    let cd = 99;
+    if (me.alive && c.mode === M_GROUND) {
+      const ch = this.map.chests;
+      for (let i = 0; i < ch.length; i++) {
+        if (!this.chestAvail[i]) continue;
+        const dx = ch[i].x - c.x;
+        const dz = ch[i].z - c.z;
+        if (Math.abs(dx) > 16 || Math.abs(dz) > 16) continue;
+        const d = Math.sqrt(dx * dx + dz * dz + (ch[i].y - c.y) ** 2);
+        if (d < cd) cd = d;
+      }
+    }
+    this.sfx.loop('chest', cd < 16 ? 0.09 * (1 - cd / 16) : 0);
     // bus mesh
     const bus = this.R.bus;
     if (this.T < this.bus.dur + 1 && this.state !== 'wait') {

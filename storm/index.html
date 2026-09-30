@@ -21,6 +21,7 @@
     <!-- ====================================================== HUD -->
     <div id="hud" class="hidden">
       <div id="stormTint"></div>
+      <div id="hurtFx"></div>
       <div id="scope" class="hidden"><div class="scope-ring"></div></div>
       <div id="dmgDirs"></div>
       <div id="nums"></div>
@@ -51,6 +52,7 @@
       </div>
 
       <div id="bottomRight">
+        <div id="pickups"></div>
         <div id="resources">
           <div class="res" data-m="0"><span class="mat wood"></span><span id="mat0">0</span></div>
           <div class="res" data-m="1"><span class="mat brick"></span><span id="mat1">0</span></div>
@@ -66,6 +68,7 @@
         <div id="specName"></div>
         <div class="spec-hint" id="specHint">Click / Space for next player</div>
       </div>
+      <div id="lockHint" class="hidden">Click to aim with the mouse</div>
       <div id="busHint" class="hidden"><span class="key">SPACE</span> <span id="busText">Jump from the bus</span></div>
       <div id="fps" class="hidden"></div>
       <div id="netStatus" class="hidden"></div>

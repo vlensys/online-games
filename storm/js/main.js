@@ -118,6 +118,11 @@ function menuFrame(dt) {
   const R = app.renderer;
   if (!R || !R.views) return;
   app.menuT += dt;
+  // the backdrop only needs ~30 fps (keeps laptops cool in menus)
+  app.menuAcc = (app.menuAcc || 0) + dt;
+  if (app.menuAcc < 1 / 31) return;
+  dt = app.menuAcc;
+  app.menuAcc = 0;
   const a = app.menuT * 0.04;
   const cam = R.camera;
   cam.position.set(Math.cos(a) * 330, 150, Math.sin(a) * 330);
@@ -147,6 +152,7 @@ function loop(t) {
 
 function onFps(fps) {
   if (app.settings.quality !== 'auto' || params.get('quality')) return;
+  if (performance.now() < (app.fpsIgnoreUntil || 0) || document.hidden) return; // loading hitches
   const h = app.fpsHist;
   h.push(fps);
   if (h.length > 6) h.shift();
@@ -282,6 +288,7 @@ function setupMenus() {
     if (app.session && app.session.kind === 'host') startHostNet(app.session);
   });
   $('hostStart').addEventListener('click', () => {
+    mobileFullscreen();
     if (app.session && app.session.kind === 'host') app.session.link.send({ t: 'hc', a: 'start' }), app.session.link.flush();
   });
   $('hostBack').addEventListener('click', () => {
@@ -434,7 +441,28 @@ function soloConfig() {
   };
 }
 
+// Phones: go fullscreen + landscape when a match starts (needs the user's tap; ignored if unsupported)
+function mobileFullscreen() {
+  if (!app.touchMode || document.fullscreenElement) return;
+  try {
+    const el = document.documentElement;
+    const p = el.requestFullscreen ? el.requestFullscreen({ navigationUI: 'hide' }) : null;
+    if (p && p.then)
+      p.then(() => {
+        try {
+          const o = screen.orientation && screen.orientation.lock && screen.orientation.lock('landscape');
+          if (o && o.catch) o.catch(() => {});
+        } catch (e) {
+          /* ignore */
+        }
+      }).catch(() => {});
+  } catch (e) {
+    /* ignore */
+  }
+}
+
 function startSolo() {
+  mobileFullscreen();
   endSession();
   loading('Starting match...');
   const runner = new ServerRunner(soloConfig());
@@ -487,6 +515,7 @@ function startGame(session, m) {
         start: m,
         ts: TS,
         isTouch: () => app.touchMode,
+        inputBlocked: () => !$('pause').classList.contains('hidden') || !$('menu').classList.contains('hidden'),
         onResults: (r) => showResults(r),
         onPause: () => {
           if (!$('pause').classList.contains('hidden')) return resume();
@@ -498,6 +527,7 @@ function startGame(session, m) {
         onFps,
       });
       app.fpsHist.length = 0;
+      app.fpsIgnoreUntil = performance.now() + 6000;
       if (session.buffer && session.buffer.length) app.game.onNet(session.buffer);
       session.buffer = null;
       hideMenu();
@@ -652,7 +682,9 @@ function renderHostAddr() {
     el.textContent = s && s.addrError ? 'unavailable' : 'starting…';
     return;
   }
-  el.textContent = app.settings.streamer ? a.replace(/[0-9A-Za-z]/g, '•') : a;
+  const dots = (n) => '•'.repeat(n);
+  const masked = /^\d+\.\d+\.\d+\.\d+:\d+$/.test(a) ? [dots(3), dots(3), dots(3), dots(3)].join('.') + ':' + dots(5) : dots(4) + '-' + dots(4);
+  el.textContent = app.settings.streamer ? masked : a;
   $('hostShow').textContent = app.settings.streamer ? 'SHOW' : 'HIDE';
 }
 

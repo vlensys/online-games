@@ -1206,7 +1206,7 @@ kbd {
 #touch {
   position: fixed;
   inset: 0;
-  z-index: 12;
+  z-index: 9; /* under the HUD: the HUD is click-through except the hotbar */
   pointer-events: none;
 }
 #joyZone {
@@ -1625,4 +1625,42 @@ body.touch #stormMsg {
     font-size: 13px;
     padding: 4px 10px;
   }
+}
+
+#pickups {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+.pk {
+  background: rgba(10, 20, 45, 0.7);
+  border-left: 4px solid #a0a8b2;
+  border-radius: 5px;
+  padding: 3px 9px;
+  font-size: 13px;
+  animation: kfIn 0.15s ease-out;
+}
+body.touch .pk {
+  font-size: 10px;
+  padding: 2px 6px;
+}
+
+#hurtFx {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background: radial-gradient(ellipse at center, transparent 55%, rgba(210, 30, 30, 0.55) 100%);
+}
+
+#lockHint {
+  position: absolute;
+  left: 50%;
+  top: 40%;
+  transform: translateX(-50%);
+  background: rgba(10, 20, 45, 0.8);
+  border-radius: 10px;
+  padding: 10px 18px;
+  font-size: 18px;
+  font-style: italic;
 }

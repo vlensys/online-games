@@ -800,9 +800,9 @@ export class BotBrain {
       // right after landing bots prefer looting over picking fights far away
       const o = this.target;
       const d0 = Math.sqrt((o.c.x - c.x) ** 2 + (o.c.z - c.z) ** 2);
-      const early = p.landedT >= 0 && t - p.landedT < 55 + 35 * (1 - this.pers.aggro);
+      const early = p.landedT >= 0 && t - p.landedT < 70 + 40 * (1 - this.pers.aggro);
       const provoked = o === this.attacker && t - this.lastDamageT < 6;
-      if (early && !provoked && d0 > 11 + 8 * this.pers.aggro) seen = false;
+      if (early && !provoked && d0 > 8 + 7 * this.pers.aggro) seen = false;
     }
     if (seen) {
       const o = this.target;

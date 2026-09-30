@@ -619,17 +619,22 @@ export class GameServer {
       rows.push([p.id, r2(c.x), r2(c.y), r2(c.z), r3(c.yaw), r3(c.pitch), c.mode, f, itemCode(held), Math.ceil(p.hp), Math.ceil(p.sh)]);
     }
     const T = r3(this.t);
+    this.snapN = (this.snapN || 0) + 1;
+    const odd = this.snapN & 1;
     for (const conn of this.conns.values()) {
       if (!conn.pid) continue;
       const me = this.players.get(conn.pid);
       let list = rows;
-      if (me && me.alive && me.c.mode !== M_BUS && rows.length > 12) {
+      if (me && me.alive && me.c.mode !== M_BUS && rows.length > 12 && conn.cid !== 0) {
+        // remote clients: nearby players every snapshot, far ones every other (bandwidth)
         const mx = me.c.x;
         const mz = me.c.z;
         list = rows.filter((r) => {
+          if (r[0] === me.id) return true;
           const dx = r[1] - mx;
           const dz = r[3] - mz;
-          return r[0] === me.id || dx * dx + dz * dz < VIEW_R * VIEW_R;
+          const d2 = dx * dx + dz * dz;
+          return d2 < 150 * 150 || (d2 < VIEW_R * VIEW_R && odd);
         });
       }
       conn.q.push({ t: 's', T, a: this.aliveCount, p: list });

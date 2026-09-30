@@ -1,7 +1,7 @@
 // Instanced scene views: build pieces, props, characters, items, chests, effects, storm.
 import * as THREE from 'three';
 import { GRID, LEVEL, RARITY, ITEM_TYPES, WEAPONS, isWeapon, isConsumable } from '../core/config.js';
-import { K_WALL, K_FLOOR, K_RAMP, K_CONE, RAMP_T, CONE_H, computeBoxes } from '../core/pieces.js';
+import { K_WALL, K_FLOOR, K_RAMP, RAMP_T, CONE_H, computeBoxes } from '../core/pieces.js';
 import { M_FALL, M_GLIDE, M_SWIM } from '../core/physics.js';
 import { PROP_TYPES } from '../core/props.js';
 import * as MD from './models.js';

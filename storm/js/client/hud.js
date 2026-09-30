@@ -21,7 +21,7 @@ export class Hud {
       'stormTint', 'scope', 'dmgDirs', 'nums', 'minimap', 'stormTimer', 'aliveCount', 'killCount', 'stormMsg', 'killfeed', 'alerts', 'bigMsg',
       'crosshair', 'hitmarker', 'prompt', 'promptKey', 'promptText', 'progress', 'progressLabel', 'progressFill', 'pieceHp', 'pieceHpFill',
       'pieceHpText', 'shieldFill', 'shieldText', 'healthFill', 'healthText', 'mat0', 'mat1', 'mat2', 'ammoReserve', 'hotbar', 'buildbar',
-      'spectate', 'specName', 'specHint', 'busHint', 'busText', 'fps', 'netStatus', 'resources',
+      'spectate', 'specName', 'specHint', 'busHint', 'busText', 'lockHint', 'fps', 'netStatus', 'resources',
     ])
       this.el[id] = $(id);
     this.cache = {};
@@ -212,6 +212,18 @@ export class Hud {
     setTimeout(() => d.remove(), 7000);
   }
 
+  pickup(text, color) {
+    const box = document.getElementById('pickups');
+    if (!box) return;
+    const d = document.createElement('div');
+    d.className = 'pk';
+    d.textContent = text;
+    if (color) d.style.borderLeftColor = color;
+    box.appendChild(d);
+    while (box.children.length > 4) box.firstChild.remove();
+    setTimeout(() => d.remove(), 2600);
+  }
+
   alert(text, cls = '', dur = 3) {
     const d = document.createElement('div');
     d.className = 'alert ' + cls;
@@ -296,6 +308,8 @@ export class Hud {
   }
 
   clearTransient() {
+    const pk = document.getElementById('pickups');
+    if (pk) pk.innerHTML = '';
     this.el.killfeed.innerHTML = '';
     this.el.alerts.innerHTML = '';
     this.el.dmgDirs.innerHTML = '';

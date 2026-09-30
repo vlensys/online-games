@@ -355,7 +355,29 @@ export class Sfx {
       g.gain.value = 0;
       g.connect(this.master);
       let src;
-      if (name === 'bus') {
+      if (name === 'chest') {
+        // shimmering chord with a slow tremolo
+        const mix = c.createGain();
+        mix.gain.value = 0.5;
+        const oscs = [];
+        for (const f of [880, 1318.5, 1760]) {
+          const o = c.createOscillator();
+          o.type = 'sine';
+          o.frequency.value = f;
+          o.connect(mix);
+          o.start();
+          oscs.push(o);
+        }
+        const lfo = c.createOscillator();
+        lfo.frequency.value = 5.5;
+        const lg = c.createGain();
+        lg.gain.value = 0.35;
+        lfo.connect(lg);
+        lg.connect(mix.gain);
+        lfo.start();
+        mix.connect(g);
+        src = { stop: () => oscs.concat([lfo]).forEach((o) => o.stop()), start: () => {} };
+      } else if (name === 'bus') {
         src = c.createOscillator();
         src.type = 'sawtooth';
         src.frequency.value = 52;
