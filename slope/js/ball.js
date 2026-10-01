@@ -9,7 +9,9 @@ const _gt = new THREE.Vector3(),
 export const COYOTE = 0.12;
 export const JUMP_BUFFER = 0.14;
 export const DASH_CD = 2.0;
-export const PHASE_TIME = 0.4;
+export const PHASE_TIME = 0.45;
+export const DASH_TIME = 0.45;
+const DASH_BOOST = 0.75; // +75% speed
 
 export function createBall() {
   return {
@@ -62,9 +64,15 @@ export function stepController(b, h, ctl, tiles, extra = null) {
       if (b.dashCD <= 0) {
         b.dashCD = DASH_CD;
         b.phase = PHASE_TIME;
-        b.dashTime = 0.24;
-        if (Math.abs(steer) > 0.3) b.vel.x = Math.sign(steer) * Math.max(Math.abs(b.vel.x), 25);
-        b.vel.z -= 11;
+        b.dashTime = DASH_TIME;
+        // a hard side-step if you're steering...
+        if (Math.abs(steer) > 0.3) b.vel.x = Math.sign(steer) * Math.max(Math.abs(b.vel.x), (ctl.latCap ?? 34) * 1.2);
+        // ...and a burst of speed along the way you're rolling
+        if (b.grounded) {
+          _vt.copy(b.vel).addScaledVector(b.groundN, -b.vel.dot(b.groundN));
+          const sp = _vt.length();
+          if (sp > 1) b.vel.addScaledVector(_vt, DASH_BOOST);
+        } else b.vel.z -= ctl.target * DASH_BOOST;
         dashed = true;
       }
     }
@@ -76,7 +84,8 @@ export function stepController(b, h, ctl, tiles, extra = null) {
   // forward drive towards the target speed: a governor that cancels the pull of gravity along the
   // direction you're rolling and eases the speed to the target (so steep roofs can't snowball it).
   // The sideways part of the pull stays: tilted roofs still drag you towards their low edge.
-  const target = ctl.target;
+  // (while dashing the governor lets the burst run, then eases you back down)
+  const target = ctl.target * (b.dashTime > 0 ? 1 + DASH_BOOST : 1);
   const g = ctl.gravity ?? GRAVITY;
   const fwd = -b.vel.z;
   if (b.grounded) {

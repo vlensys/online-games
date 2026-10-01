@@ -16,7 +16,7 @@ export const POWERUPS = ['shield', 'magnet', 'double', 'slowmo'];
 // Forward (horizontal) speed the ball is driven to in each section; section 0 is the run-in tunnel.
 // Like the original, every speed tunnel pushes it up a notch.
 export function sectionSpeed(k) {
-  return Math.min(34 + k * 10, 130);
+  return Math.min(26 + k * 6, 96);
 }
 // Everything else scales with the square of the speed (the original keeps adding "push down" and
 // steering force at every speed-up), so the ball takes the same lines through the same pieces in
