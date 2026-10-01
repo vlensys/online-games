@@ -1664,3 +1664,15 @@ body.touch .pk {
   font-size: 18px;
   font-style: italic;
 }
+
+/* every part of the game surface: no browser gestures (double-tap zoom, pinch) */
+#view,
+#hud,
+#hud *,
+#touch,
+#touch * {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}

@@ -13,6 +13,9 @@ import { Game } from './client/game.js';
 import { ServerRunner, LocalLink } from './sim/runner.js';
 import { loadSettings, saveSettings } from './ui/settings.js';
 import { HostNet, joinGame, netMode } from './net/net.js';
+import { preventPageZoom } from './ui/nozoom.js';
+
+preventPageZoom();
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
