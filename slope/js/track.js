@@ -16,7 +16,7 @@ export const POWERUPS = ['shield', 'magnet', 'double', 'slowmo'];
 // Forward (horizontal) speed the ball is driven to in each section; section 0 is the run-in tunnel.
 // Like the original, every speed tunnel pushes it up a notch.
 export function sectionSpeed(k) {
-  return Math.min(26 + k * 6, 96);
+  return Math.min(30 + k * 8, 112);
 }
 // Everything else scales with the square of the speed (the original keeps adding "push down" and
 // steering force at every speed-up), so the ball takes the same lines through the same pieces in
@@ -81,6 +81,8 @@ const CITY_FAR = new THREE.Color(0.035, 0.035, 0.035);
 const TINT_SHELL = new THREE.Color(0.55, 0.55, 0.55);
 // the death towers are drawn in thin, dimmer red (the original's "PerilThin")
 const TINT_TOWER = new THREE.Color(0.45, 0.45, 0.45);
+// secret routes are gold whatever the section colour (a negative tint = this exact colour)
+const TINT_GOLD = new THREE.Color(-1.0, -0.74, -0.1);
 
 // Speed tunnel cross-section (original units, measured across the 10-wide tile): the outer shell you
 // can roll up and over ("speed tunnel skip"), and the inside of the arch.
@@ -138,6 +140,7 @@ export class Track {
     this.genSection = 0;
     this.queue = [];
     this.pieces = 0;
+    this.lastGold = -9;
     this.goRun();
   }
 
@@ -201,7 +204,7 @@ export class Track {
       m.compose(_v.copy(start).addScaledVector(dir, len / 2).addScaledVector(up, -th / 2), q, _s.set(w, th, len));
     }
     const pool = o.pool || 'tiles';
-    const t = { box, start, end, dir, up, right, q, len, w, pid: this.pid, pool, m, slot: this.pools[pool].addMatrix(m, o.tint || null), secret: !!o.secret };
+    const t = { box, start, end, dir, up, right, q, len, w, pid: this.pid, pool, m, slot: this.pools[pool].addMatrix(m, o.tint || null), secret: !!o.secret, gold: !!o.gold };
     this.tiles.push(t);
     if (o.connect !== false) {
       for (const prev of this.lastEnds) {
@@ -400,6 +403,84 @@ export class Track {
     const up = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
     return this.plate(mid.clone().addScaledVector(up, 1.2), q, wid, (s1 - s0) * S, { thick: 1.2, slab: 1.2, surface: false, connect: false, tint: TINT_SHELL });
   }
+  // ------------------------------------------------------------------ secret gold routes
+  // Sometimes an obstacle gets a hidden way round: a gold shoulder on the right of its first rooftops
+  // (flush with them — just steer onto it; a trail of coins points the way) climbs onto a gold road
+  // that runs alongside the obstacle, a step above the track and clear of everything on it, with
+  // coins and a power-up (extra coins in Classic). Past the obstacle the road comes back down flush
+  // with the track and a trail of coins leads you back on. The step means the only way on is at the
+  // start; slip off the inside of the road and you just drop back onto the track.
+  goldChance() {
+    // the first obstacle that can have one always does, so you find out they exist
+    const first = this.lastGold < 0;
+    if (this.pieces - this.lastGold < 3 || (!first && this.rng() > 0.35)) return false;
+    this.lastGold = this.pieces;
+    return true;
+  }
+  // r.tiles: a short route, just a shoulder beside that many rooftops. Otherwise (original units along
+  // the obstacle from its first rooftop) the road comes down at r.exit, runs flush beside the track to
+  // r.end, and r.lip curls its end up into a kicker like the track's own.
+  goldRoute(base, r) {
+    const H = 2, // the raised road's step above the track
+      L = 10.6, // its inside edge (a small gap off the track's edge at 10)
+      Rx = 15; // its outside edge
+    const mx = (L + Rx) / 2;
+    let prev = null;
+    // a gold rooftop from (s0, h0) to (s1, h1) between x0 and x1, joined to the one before
+    const seg = (x0, x1, s0, s1, h0, h1, o = {}) => {
+      const q = h1 === h0 ? Q45 : this.frame(Math.atan2(h1 - h0, s1 - s0));
+      const t = this.plate(this.P((x0 + x1) / 2, s0, h0, base), q, (x1 - x0) * S, Math.hypot(s1 - s0, h1 - h0) * S, { tint: TINT_GOLD, secret: true, gold: true, connect: false, body: 45 * S, ...o });
+      if (prev) {
+        prev.box.connectEnd = true;
+        t.box.connectStart = true;
+      }
+      if (o.exit) t.goldExit = true;
+      prev = t;
+      return t;
+    };
+    // a trail of coins from the road back onto the track
+    const trail = (s0, s1, h0) => {
+      for (let k = 0; k < 5; k++) this.gem(this.P(lerp(mx, 6, k / 4), lerp(s0, s1, k / 4), lerp(h0, 0, Math.min(1, k / 2)) + 1.1, base));
+    };
+    // breadcrumbs on the first rooftop, then the shoulder beside it, flush with the roof
+    this.coins(7.6, 1.5, 9, 0, 3, base);
+    const nShoulder = r.tiles || 2;
+    for (let i = 0; i < nShoulder; i++) {
+      const t = seg(10, Rx, i * BL, (i + 1) * BL, 0, 0, { exit: r.tiles && i === nShoulder - 1 });
+      if (i === 1) this.pad(t);
+      if (r.tiles && i === nShoulder - 1) trail(i * BL + 1, (i + 1) * BL - 2, 0);
+      else this.coins(12.5, i * BL + 4, i * BL + 11, 0, 2, base);
+    }
+    let sPrize = BL * 1.5,
+      hPrize = 0;
+    if (!r.tiles) {
+      // climb onto the road, run it to the exit
+      const s0 = nShoulder * BL;
+      seg(L, Rx, s0, s0 + BL, 0, H);
+      this.coins(mx, s0 + 3, s0 + 11, H * 0.5, 3, base);
+      for (let s = s0 + BL; s < r.exit - 0.01; s += BL) {
+        const s1 = Math.min(s + BL, r.exit);
+        seg(L, Rx, s, s1, H, H);
+        if (s1 - s > 6) this.coins(mx, s + 3, s1 - 3, H, 3, base);
+      }
+      // down again, flush beside the track (its inside edge on the track's edge), and the way back
+      const dL = 7;
+      seg(10, Rx, r.exit, r.exit + dL, H, 0, { exit: true });
+      seg(10, Rx, r.exit + dL, r.end, 0, 0, { exit: true });
+      let last = [r.end, 0];
+      for (const p of r.lip || []) {
+        seg(10, Rx, last[0], p[0], last[1], p[1], { body: (last[1] + 1.5) * S, thick: 4, exit: true });
+        last = p;
+      }
+      trail(r.exit + 1, r.end - 2, H);
+      sPrize = (s0 + BL + r.exit) / 2;
+      hPrize = H;
+    }
+    // the prize, about halfway along
+    if (this.plus) this.powerup(this.P(mx, sPrize, hPrize + 1.6, base));
+    else this.coins(mx, sPrize - 5, sPrize + 5, hPrize, 4, base);
+  }
+
   // ------------------------------------------------------------------ the original's runs
   // "spawn go tunnel run": the drop-in chute, a long arched run-in with speed arrows, then a jump
   goRun() {
@@ -479,6 +560,7 @@ export class Track {
     this.tr(0, -2, 20);
     this.slopeTile();
     this.deathTowers();
+    if (this.goldChance()) this.goldRoute(this.C.clone(), { tiles: 3 });
     if (this.rng() < 0.45) this.coins(5, 3, 12, 0, 3);
     this.fwd();
     this.slopeTile();
@@ -534,6 +616,7 @@ export class Track {
     this.tr(this.rf(-5, 5), -7, 20);
     this.slopeTile();
     this.deathTowers();
+    if (this.goldChance()) this.goldRoute(this.C.clone(), { exit: 10 * BL, end: 13 * BL - 1 });
     for (let i = 2; i <= 14; i++) {
       this.fwd();
       this.slopeTile();
@@ -551,6 +634,7 @@ export class Track {
     this.tr(this.rf(-5, 5), -7, 20);
     this.slopeTile();
     this.deathTowers();
+    if (this.goldChance()) this.goldRoute(this.C.clone(), { exit: 8 * BL, end: 8 * BL + 9.9, lip: [[8 * BL + 11.31, 0.445], [8 * BL + 12.73, 1.39]] });
     for (let i = 2; i <= 8; i++) {
       this.fwd();
       this.slopeTile();
@@ -631,6 +715,7 @@ export class Track {
     this.tr(this.rf(-3, 3), -3, 22);
     this.slopeTile();
     this.deathTowers();
+    if (this.goldChance()) this.goldRoute(this.C.clone(), { exit: 4 * BL + 5, end: 6 * BL - 0.5 });
     for (let i = 2; i <= 6; i++) {
       this.fwd();
       this.slopeTile();
