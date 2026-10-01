@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
-import { Track, sectionSpeed, GRAVITY, BALL_R, POWERUPS } from './track.js';
+import { Track, sectionSpeed, gravityFor, jumpVFor, steerFor, latDampFor, latCapFor, GRAVITY, BALL_R, POWERUPS } from './track.js';
 import { sphereTouchesBox, boundsOverlapSphere, topHeightBelow, rayBox } from './physics.js';
 import { createBall, stepController, COYOTE, JUMP_BUFFER, DASH_CD, PHASE_TIME } from './ball.js';
 import { InstancedPool, createTileMaterial, createHazardMaterial, createTowerMaterial, createPadMaterial, Background, Trail, Particles, Shards, LandingMarker, makeSign } from './render.js';
@@ -417,12 +417,10 @@ function resetWorld() {
   const urlSeed = parseInt(new URLSearchParams(location.search).get('seed'), 10);
   track.reset(Number.isFinite(urlSeed) ? urlSeed : (Math.random() * 2 ** 31) | 0, S.mode, hints && S.mode === 'plus');
   track.update(0);
-  ball.pos.set(0, BALL_R + 0.02, 0);
-  // settle onto the runway surface
-  const ref = track.refAt(0);
-  ball.pos.y = ref.y + BALL_R + 0.1;
+  // drop in at the top of the run-in chute, like the original
+  ball.pos.copy(track.startPos);
   ball.prev.copy(ball.pos);
-  ball.vel.set(0, 0, -4);
+  ball.vel.set(0, 0, -2);
   ball.quat.identity();
   ball.grounded = false;
   ball.coyote = 0;
@@ -444,6 +442,7 @@ function resetWorld() {
   S.gems = 0;
   S.section = 0;
   S.lastPid = 0;
+  S.secretShown = false;
   S.sectionStart = 0;
   S.powers = { magnet: 0, double: 0, slowmo: 0 };
   trail.reset();
@@ -455,7 +454,9 @@ function resetWorld() {
   setThemeInstant(0);
   setUiTheme(0);
   audio.intensity = 0;
-  camera.position.set(0, ball.pos.y + 4, 10);
+  camera.position.copy(ball.pos).add(CAM_START);
+  camOffset.copy(CAM_START);
+  camFollow.copy(ball.pos);
 }
 
 function startRun() {
@@ -576,16 +577,26 @@ function stepBall(h) {
   const ctl = input.ctl;
   ctl.steer = readSteer() * settings.sensitivity;
   ctl.target = sectionSpeed(S.section) + Math.min((S.distance - S.sectionStart) * 0.003, 3);
+  ctl.gravity = gravityFor(S.section);
+  ctl.jumpV = jumpVFor(S.section);
+  ctl.steerAcc = steerFor(S.section);
+  ctl.latDamp = latDampFor(S.section);
+  ctl.latCap = latCapFor(S.section);
   ctl.plus = plus;
   ctl.jumpQueued = input.jumpQueued;
   ctl.dashQueued = input.dashQueued;
   const { grounded, groundBox, wasGrounded, impact, wall, jumped, dashed, fwd } = stepController(b, h, ctl, track.tiles, track.towers);
-  // score = platforms reached (like the original): +1 the first time the ball lands on a new one
-  if (grounded && groundBox && groundBox.pid > S.lastPid) {
-    S.lastPid = groundBox.pid;
+  // score: +1 for every obstacle you get through (the original's score points at the end of each)
+  for (const sp of track.scores) {
+    if (sp.done || b.pos.z > sp.z) continue;
+    sp.done = true;
     S.score += S.powers.double > 0 ? 2 : 1;
-    if (groundBox.secret && !groundBox.found) {
-      groundBox.found = true;
+  }
+  // the hidden routes: tunnel roofs and the outside of the speed tunnels
+  if (grounded && groundBox && groundBox.secret && !groundBox.found) {
+    groundBox.found = true;
+    if (!S.secretShown) {
+      S.secretShown = true;
       banner('SECRET ROUTE!');
       audio.play('level');
     }
@@ -688,7 +699,7 @@ function stepBall(h) {
 
   // falling / stuck
   const ref = track.refAt(b.pos.z);
-  if (b.pos.y < ref.y - 16) {
+  if (b.pos.y < ref.y - 26) {
     die('fall');
     return;
   }
@@ -834,64 +845,49 @@ function damp(a, b, k, dt) {
   return a + (b - a) * (1 - Math.exp(-k * dt));
 }
 
+// The original's camera rig is pinned to the ball and looks down the 45° slope at a fixed angle;
+// in tunnels it tucks in close behind the ball (and stays centred on the tunnel).
+const CAM_START = new THREE.Vector3(0, 12.13, 8.07); // the original's camera spot (×2)
+const CAM_CLOSE = new THREE.Vector3(0, 5.4, 6.2);
+const CAM_PITCH = THREE.MathUtils.degToRad(-45.23);
+const camOffset = new THREE.Vector3().copy(CAM_START);
+const camFollow = new THREE.Vector3();
 function updateCamera(dt) {
   const p = renderPos;
   if (S.state === 'menu') {
     menuAngle += dt * 0.12;
-    const r = 13;
-    _desired.set(p.x + Math.sin(menuAngle) * r, p.y + 4.2 + Math.sin(menuAngle * 0.7) * 1.2, p.z + Math.cos(menuAngle) * r);
+    const r = 15;
+    _desired.set(p.x + Math.sin(menuAngle) * r, p.y + 6 + Math.sin(menuAngle * 0.7) * 1.5, p.z + Math.cos(menuAngle) * r);
     camera.position.lerp(_desired, 1 - Math.exp(-2 * dt));
-    camLook.lerp(_tmp.set(p.x, p.y + 0.5, p.z - 6), 1 - Math.exp(-3 * dt));
+    camLook.lerp(_tmp.set(p.x, p.y - 2, p.z - 8), 1 - Math.exp(-3 * dt));
     camera.lookAt(camLook);
     camera.fov = damp(camera.fov, fitFov(62), 3, dt);
     camera.updateProjectionMatrix();
+    camFollow.copy(p);
     return;
   }
   const speed = Math.max(-ball.vel.z, 0);
-  const ref = track.refAt(p.z);
-  const refAhead = track.refAt(p.z - 16);
+  let zone = null;
   if (S.state !== 'dead' || S.cause === 'crash') {
-    // low and close behind the ball, like the original
-    const back = 8.4 + speed * 0.025;
-    const up = 3.8 + speed * 0.012;
-    // follow the ball, but blend towards the track line so jumps / falls don't yank the view
-    const baseY = S.state === 'dead' ? camera.position.y - up : Math.max(p.y, ref.y + BALL_R - 1.5) * 0.75 + (ref.y + BALL_R) * 0.25;
-    // the track behind the ball is higher on a steep descent: measure how much, so the camera stays
-    // above the rooftop behind you instead of sinking into the building under it
-    const rise = Math.max(0, track.refAt(p.z + back).y - ref.y);
-    let camY = baseY + up + rise;
-    // under a roof (tunnels): keep the camera below the ceiling instead of on top of it
-    const ceil = ceilingAbove(p, Math.max(camY - p.y, 0) + 2);
-    const underRoof = ceil < Math.max(camY - p.y, 0) + 1.2;
-    if (underRoof) camY = p.y + Math.max(0.9, ceil - 0.9);
-    _desired.set(THREE.MathUtils.lerp(p.x, ref.x, 0.1), camY, p.z + back);
-    if (S.state !== 'dead') clearCameraSpot(_desired, underRoof);
-    camera.position.x = damp(camera.position.x, _desired.x, 7, dt);
-    // rise quickly (out of the way of a building) but settle down gently
-    camera.position.y = damp(camera.position.y, _desired.y, _desired.y > camera.position.y ? 14 : 8, dt);
-    if (S.state === 'dead') camera.position.z = damp(camera.position.z, _desired.z + 4, 1.5, dt);
-    else camera.position.z = _desired.z;
-    camUnderRoof = underRoof;
-    // look down the slope: aim at the track ahead, and further down when a drop is coming,
-    // so the rooftop you're about to land on is always on screen
-    let low = refAhead.y;
-    for (const dz of [8, 24, 32]) low = Math.min(low, track.refAt(p.z - dz).y);
-    // (but never so low that a high-flying ball leaves the top of the screen)
-    const lookY = Math.max(Math.min(p.y - 0.4, refAhead.y + BALL_R + 0.6, low + BALL_R + 3), p.y - 5.5);
-    camLook.set(THREE.MathUtils.lerp(p.x, refAhead.x, 0.3), damp(camLook.y, lookY, 10, dt), p.z - 18);
+    zone = S.state === 'dead' ? null : track.camZoneAt(p.z);
+    camOffset.lerp(zone ? CAM_CLOSE : CAM_START, 1 - Math.exp(-(zone ? 4 : 1.6) * dt));
+    const tx = zone ? THREE.MathUtils.clamp(p.x, zone.x - 4, zone.x + 4) : p.x;
+    camFollow.x = damp(camFollow.x, tx, 10, dt);
+    camFollow.y = damp(camFollow.y, p.y, 22, dt);
+    camFollow.z = p.z;
+    _desired.copy(camFollow).add(camOffset);
+    if (S.state !== 'dead') clearCameraSpot(_desired, !!zone);
+    camera.position.copy(_desired);
+    camera.rotation.set(CAM_PITCH, 0, 0);
   } else {
-    // falling: stop following forward, keep watching the ball drop away
+    // fell: the camera stays where it was and watches the ball drop away
     camLook.lerp(p, 1 - Math.exp(-4 * dt));
+    camera.lookAt(camLook);
   }
-  // the damped camera can lag into a wall for a frame: if its view is blocked, use the checked spot
-  if (S.state === 'playing' && !window.__noCamClear) {
-    _eye.copy(renderPos);
-    _eye.y += 0.6;
-    if (sightBlocked(_eye, camera.position) !== Infinity || (!camUnderRoof && minCamY(camera.position, 0.7) > camera.position.y)) camera.position.copy(_desired);
-  }
-  camera.lookAt(camLook);
+  camUnderRoof = !!zone;
+  if (S.state !== 'dead') camLook.copy(p);
   // lateral lean
-  camera.rotateZ(THREE.MathUtils.clamp(-ball.vel.x * 0.0045, -0.08, 0.08));
+  camera.rotateZ(THREE.MathUtils.clamp(-ball.vel.x * 0.003, -0.06, 0.06));
   // shake
   if (S.shake > 0) {
     const s = S.shake * S.shake * 0.35;
@@ -900,7 +896,7 @@ function updateCamera(dt) {
     S.shake = Math.max(0, S.shake - dt * 2.2);
   }
   S.fovKick = damp(S.fovKick, 0, 4, dt);
-  const fov = 64 + THREE.MathUtils.clamp((speed - 24) * 0.28, 0, 16) + S.fovKick;
+  const fov = 62 + THREE.MathUtils.clamp((speed - 40) * 0.1, 0, 10) + S.fovKick;
   camera.fov = damp(camera.fov, fitFov(fov), 5, dt);
   camera.updateProjectionMatrix();
 }
@@ -993,7 +989,8 @@ function updateHud() {
     hudCache.score = S.score;
     drawDotScore($('hud-score'), S.score);
   }
-  setText('hud-speed', String(Math.round(Math.max(-ball.vel.z, 0) * 3.6)));
+  // shown in the original's units (the world here is drawn at twice its scale)
+  setText('hud-speed', String(Math.round(ball.vel.length() * 1.8)));
   setText('hud-level', 'SECTION ' + (S.section + 1));
   const gemsEl = $('hud-gems').querySelector('b');
   if (hudCache.gems !== S.gems) {

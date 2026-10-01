@@ -7,7 +7,7 @@ Pure static files — no build step, no server, no external CDNs (everything is 
 
 | Game | Folder | Status |
 | --- | --- | --- |
-| **Slope+** — endless neon slope with jump, dash, shields, skins | [`slope/`](slope/) | ✅ Playable |
+| **Slope+** — the original Slope rebuilt (same obstacles, gaps and sections), plus jump, dash, shields, skins | [`slope/`](slope/) | ✅ Playable |
 | **Storm Royale** — 3D battle royale with building, bots and private online matches | [`storm/`](storm/) | ✅ Playable — solo vs bots and private online matches |
 | Game 3 | — | 🚧 Planned |
 
@@ -36,10 +36,10 @@ then open <http://localhost:8080/>.
 
 - **Steer** A/D or ←/→ · **Jump** Space/W/↑ · **Dash** Shift/S/↓ (phase through red for a moment; hold a direction to side-step; works mid-air) · **Pause** Esc/P · **Restart** R · **Mute** M
 - Touchscreens: hold the left/right half of the screen to steer, swipe up to jump, swipe down to dash (or use the buttons). Gamepads work too.
-- Built like the original: sections of early (RNG blocks, slants, straights), middle (treblocks, tunnels, snakes, spinners) and late (hors, verts, sliding gates) obstacles, each ending in a speed-tunnel building that boosts you and launches you into the next section. It gets harder every section: faster, narrower, and more of the obstacles move.
-- Every platform is the rooftop of a building that goes all the way down; big gaps between buildings are crossed by rolling off onto a lower roof or by hitting a ramp.
-- **Score** = platforms you land on. **Secret routes**: small gold ramps at the edge of some rooftops launch you onto a hidden gold lane above the track, full of coins and power-ups (shield, coin magnet, 2x points, slow-mo).
-- **Plus** mode adds jump gaps, hurdles, dash-gates and sweeping blockers. **Classic** mode is steering-only and every section is survivable without jumping.
+- A rebuild of the original's level generator: the same pieces with the same sizes, gaps and offsets, on the same 45° descent — RNG blocks, slants, straights (early), treblocks, red tunnels, snakes (middle), hors and verts (late), every section ending in a speed tunnel. Like the original, section 1 is one early obstacle; section 2 adds a set of middle ones; from section 3 there's a set of each, and each set is one obstacle repeated 1, 2, 3, then 4 times. Straights and snakes stop after 50 points.
+- Every obstacle is its own building with open air before it, and red death towers stand either side of where each one starts. Each speed tunnel ups the speed, and gravity and steering scale with it, so the lines stay the same but you have less time.
+- **Score** = obstacles you get through. **Secret routes** are the original's own: ride the green roof over a red tunnel, or go up the side of a speed tunnel and over the top — there are coins up there, and power-ups in Plus (shield, coin magnet, 2x points, slow-mo).
+- **Plus** mode adds jump and dash. **Classic** mode is steering-only, like the original.
 - Coins unlock 10 ball skins. Best scores, coins and settings are saved in the browser (localStorage).
 - Graphics: *Auto* drops to *Low* if the frame rate is poor. Force a level in Settings or with `slope/?quality=low`. `slope/?seed=123` replays the same track.
 
@@ -48,8 +48,8 @@ How it's built to be less buggy than the original:
 - Fixed-timestep physics (120 Hz) with sub-stepping, so fast speeds never tunnel through the floor.
 - Track tiles treat shared edges as one continuous surface → no "invisible bumps" at seams.
 - A speed governor keeps the ball near the intended speed instead of snowballing on long drops.
-- The generator sizes every gap / ramp from the real physics constants for the current speed, and keeps a runway after anything that launches the ball.
-- A headless bot drives thousands of generated segments in both modes to check nothing is unclearable.
+- Gravity, steering and drift all scale with the square of each section's speed, so every gap and ramp in the original's layout stays clearable at any speed.
+- A headless bot drives generated runs to check the pieces are clearable.
 
 ## Project layout
 

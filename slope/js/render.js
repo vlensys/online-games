@@ -37,6 +37,21 @@ export class InstancedPool {
     this.mesh.setMatrixAt(slot, _mat);
     this.dirty = true;
   }
+  // any affine matrix (sheared boxes: buildings with vertical walls under a sloped roof)
+  addMatrix(m, color) {
+    const slot = this.free.pop();
+    if (slot === undefined) return -1;
+    this.mesh.setMatrixAt(slot, m);
+    this.mesh.setColorAt(slot, color || _white);
+    this.mesh.instanceColor.needsUpdate = true;
+    this.dirty = true;
+    return slot;
+  }
+  setMatrix(slot, m) {
+    if (slot < 0) return;
+    this.mesh.setMatrixAt(slot, m);
+    this.dirty = true;
+  }
   setColor(slot, color) {
     if (slot < 0) return;
     this.mesh.setColorAt(slot, color);
