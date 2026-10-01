@@ -715,49 +715,110 @@ function maybeRecenter() {
 // ============================================================================ camera & visuals
 const camLook = new THREE.Vector3();
 const _desired = new THREE.Vector3();
+let camUnderRoof = false;
 let menuAngle = 0;
 
-// Camera collision: never let a building or rooftop sit between the ball and the camera
-// (that's what made whole stretches look blank).
+// Camera collision. The spot behind the ball is adjusted so that the ball and the road ahead stay
+// in view: under a roof (tunnels) the camera stays below the ceiling; otherwise it never sinks into
+// a building or rooftop (after a drop it stays above the roof you just left), and when something
+// is between it and the ball it rises over it, only moving in closer as a last resort.
 const _co = new THREE.Vector3(),
-  _cd = new THREE.Vector3();
-function keepCameraClear() {
-  if (window.__noCamClear) return; // debug switch for tests
-  _co.copy(renderPos);
-  _co.y += 0.9;
-  _cd.subVectors(camera.position, _co);
+  _cd = new THREE.Vector3(),
+  _cl = new THREE.Vector3();
+const CAM_LISTS = () => [track.towers, track.tiles];
+
+// first hit along the segment a→b (0..1 of its length), or Infinity
+function sightBlocked(a, b) {
+  _cd.subVectors(b, a);
   const dist = _cd.length();
-  if (dist < 0.5) return;
+  if (dist < 0.3) return Infinity;
   _cd.divideScalar(dist);
-  const zlo = Math.min(_co.z, camera.position.z) - 1,
-    zhi = Math.max(_co.z, camera.position.z) + 1;
+  const zlo = Math.min(a.z, b.z) - 1,
+    zhi = Math.max(a.z, b.z) + 1;
   let t = dist;
-  for (const list of [track.towers, track.tiles]) {
+  for (const list of CAM_LISTS()) {
     for (const o of list) {
-      const b = o.box;
-      if (b.max.z < zlo || b.min.z > zhi) continue;
-      const d = rayBox(_co, _cd, b, t);
-      if (d < t) t = d;
+      const bx = o.box;
+      if (bx.max.z < zlo || bx.min.z > zhi) continue;
+      const d = rayBox(a, _cd, bx, t);
+      if (d < t && d > 0) t = d; // (a box the eye itself is in doesn't count)
     }
   }
-  if (t < dist) camera.position.copy(_co).addScaledVector(_cd, Math.max(t - 0.5, 1.2));
+  return t < dist ? t : Infinity;
 }
 
-const _up = new THREE.Vector3(0, 1, 0);
-function ceilingAbove(p, maxH) {
-  _co.copy(p);
-  let t = maxH;
+// Lowest height the camera may have at p (or -Infinity): `clr` above the tops of buildings it is
+// inside / just above, and above rooftops it is over (never ones it is underneath).
+function minCamY(p, clr) {
+  let need = -Infinity;
+  for (const o of track.towers) {
+    const b = o.box;
+    if (p.z < b.min.z - clr || p.z > b.max.z + clr || p.x < b.min.x - clr || p.x > b.max.x + clr) continue;
+    if (p.y < b.min.y || p.y >= b.max.y + clr) continue;
+    if (b.max.y + clr > need) need = b.max.y + clr;
+  }
   for (const o of track.tiles) {
     const b = o.box;
-    if (b.max.z < p.z - 12 || b.min.z > p.z + 12 || b.min.y > p.y + maxH || b.max.y < p.y) continue;
-    // check straight up from the ball and from a point behind it (where the camera will be)
-    for (const dz of [0, 6]) {
-      _co.set(p.x, p.y, p.z + dz);
-      const d = rayBox(_co, _up, b, t);
-      if (d < t && d > 0.2) t = d;
+    if (p.z < b.min.z - clr || p.z > b.max.z + clr || p.x < b.min.x - clr || p.x > b.max.x + clr) continue;
+    _cl.copy(p).sub(b.pos).applyQuaternion(b.invQuat);
+    if (Math.abs(_cl.x) > b.half.x + clr || Math.abs(_cl.z) > b.half.z + clr) continue;
+    if (_cl.y < 0 || _cl.y >= b.half.y + clr) continue; // underneath it (a roof), or already clear
+    const upY = _cd.set(0, 1, 0).applyQuaternion(b.quat).y;
+    if (upY < 0.3) continue; // walls / tube panels
+    const y = p.y + (b.half.y + clr - _cl.y) / upY;
+    if (y > need) need = y;
+  }
+  return need;
+}
+
+// lowest ceiling straight above the ball (and above the spot behind it, where the camera goes)
+const _up = new THREE.Vector3(0, 1, 0);
+function ceilingAbove(p, maxH) {
+  let t = maxH;
+  for (const list of CAM_LISTS()) {
+    for (const o of list) {
+      const b = o.box;
+      if (b.max.z < p.z - 12 || b.min.z > p.z + 12 || b.min.y > p.y + maxH || b.max.y < p.y) continue;
+      for (const dz of [0, 6]) {
+        _co.set(p.x, p.y, p.z + dz);
+        const d = rayBox(_co, _up, b, t);
+        if (d < t && d > 0.2) t = d;
+      }
     }
   }
   return t;
+}
+
+// Moves `cam` (a desired or actual camera position) to a spot with a clear view of the ball.
+const _eye = new THREE.Vector3(),
+  _try = new THREE.Vector3();
+function clearCameraSpot(cam, underRoof) {
+  if (window.__noCamClear) return; // debug switch for tests
+  _eye.copy(renderPos);
+  _eye.y += 0.6;
+  if (!underRoof) {
+    // out of buildings / off rooftops
+    for (let k = 0; k < 3; k++) {
+      const y = minCamY(cam, 0.7);
+      if (!(y > cam.y)) break;
+      cam.y = y + 0.01;
+    }
+    if (sightBlocked(_eye, cam) === Infinity) return;
+    // something in the way: look over it
+    for (let k = 1; k <= 8; k++) {
+      _try.copy(cam);
+      _try.y += k * 1.5;
+      if (sightBlocked(_eye, _try) === Infinity && !(minCamY(_try, 0.7) > _try.y)) {
+        cam.copy(_try);
+        return;
+      }
+    }
+  } else if (sightBlocked(_eye, cam) === Infinity) return;
+  // last resort: come in closer along the sight line
+  const t = sightBlocked(_eye, cam);
+  if (t === Infinity) return;
+  _cd.subVectors(cam, _eye).normalize();
+  cam.copy(_eye).addScaledVector(_cd, Math.max(t - 0.5, 1.2));
 }
 
 // Keep roughly the same horizontal view on tall/narrow (portrait phone) screens.
@@ -792,20 +853,25 @@ function updateCamera(dt) {
   if (S.state !== 'dead' || S.cause === 'crash') {
     // low and close behind the ball, like the original
     const back = 8.4 + speed * 0.025;
-    let up = 3.8 + speed * 0.012;
-    // under a roof (tunnels): drop the camera below the ceiling instead of letting it sit on top of it
-    const ceil = ceilingAbove(p, up + 2);
-    if (ceil < up + 1.2) up = Math.max(0.9, ceil - 0.9);
+    const up = 3.8 + speed * 0.012;
     // follow the ball, but blend towards the track line so jumps / falls don't yank the view
     const baseY = S.state === 'dead' ? camera.position.y - up : Math.max(p.y, ref.y + BALL_R - 1.5) * 0.75 + (ref.y + BALL_R) * 0.25;
     // the track behind the ball is higher on a steep descent: measure how much, so the camera stays
     // above the rooftop behind you instead of sinking into the building under it
     const rise = Math.max(0, track.refAt(p.z + back).y - ref.y);
-    _desired.set(THREE.MathUtils.lerp(p.x, ref.x, 0.1), baseY + up + rise, p.z + back);
+    let camY = baseY + up + rise;
+    // under a roof (tunnels): keep the camera below the ceiling instead of on top of it
+    const ceil = ceilingAbove(p, Math.max(camY - p.y, 0) + 2);
+    const underRoof = ceil < Math.max(camY - p.y, 0) + 1.2;
+    if (underRoof) camY = p.y + Math.max(0.9, ceil - 0.9);
+    _desired.set(THREE.MathUtils.lerp(p.x, ref.x, 0.1), camY, p.z + back);
+    if (S.state !== 'dead') clearCameraSpot(_desired, underRoof);
     camera.position.x = damp(camera.position.x, _desired.x, 7, dt);
-    camera.position.y = damp(camera.position.y, _desired.y, 8, dt);
+    // rise quickly (out of the way of a building) but settle down gently
+    camera.position.y = damp(camera.position.y, _desired.y, _desired.y > camera.position.y ? 14 : 8, dt);
     if (S.state === 'dead') camera.position.z = damp(camera.position.z, _desired.z + 4, 1.5, dt);
     else camera.position.z = _desired.z;
+    camUnderRoof = underRoof;
     // look down the slope: aim at the track ahead, and further down when a drop is coming,
     // so the rooftop you're about to land on is always on screen
     let low = refAhead.y;
@@ -817,7 +883,12 @@ function updateCamera(dt) {
     // falling: stop following forward, keep watching the ball drop away
     camLook.lerp(p, 1 - Math.exp(-4 * dt));
   }
-  keepCameraClear();
+  // the damped camera can lag into a wall for a frame: if its view is blocked, use the checked spot
+  if (S.state === 'playing' && !window.__noCamClear) {
+    _eye.copy(renderPos);
+    _eye.y += 0.6;
+    if (sightBlocked(_eye, camera.position) !== Infinity || (!camUnderRoof && minCamY(camera.position, 0.7) > camera.position.y)) camera.position.copy(_desired);
+  }
   camera.lookAt(camLook);
   // lateral lean
   camera.rotateZ(THREE.MathUtils.clamp(-ball.vel.x * 0.0045, -0.08, 0.08));
@@ -890,9 +961,9 @@ function updateVisuals(dt) {
   bg.update(dt, camera);
   particles.update(dt);
   shards.update(dt);
-  pools.tiles.flush();
-  pools.hazards.flush();
-  pools.gems.flush();
+  // upload every pool that changed this frame (buildings and pads included: a pool that isn't
+  // flushed keeps drawing whatever was there when it was first uploaded)
+  for (const k in pools) pools[k].flush();
 }
 
 // ============================================================================ HUD
@@ -1276,4 +1347,4 @@ renderer.domElement.addEventListener('webglcontextlost', (e) => {
 });
 
 // debug / testing hooks
-window.__slope = { S, ball, track, startRun, camera, pools, THREE, sectionSpeed, renderPos, rayBox };
+window.__slope = { S, ball, track, startRun, camera, pools, THREE, sectionSpeed, renderPos, rayBox, cam: { sightBlocked, minCamY, ceilingAbove, clearCameraSpot, camLook }, scene, renderer, ballMesh };

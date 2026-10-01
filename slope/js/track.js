@@ -46,6 +46,8 @@ function dropReach(v, pitch, H, extraVy = 0) {
 const TINT_FLOOR = new THREE.Color(1, 1, 1);
 const TINT_GATE = new THREE.Color(1.1, 0.35, 1.2);
 const TINT_SECRET = new THREE.Color(-1.0, -0.78, -0.12); // negative = absolute colour (gold)
+const CITY_NEAR = new THREE.Color(0.07, 0.07, 0.07); // skyline lines are dimmer than the track
+const CITY_FAR = new THREE.Color(0.035, 0.035, 0.035);
 const _scale = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _v = new THREE.Vector3();
@@ -261,12 +263,12 @@ export class Track {
   }
 
   // wireframe building block — solid, so the ball bounces off / lands on buildings like you'd expect
-  tower(cx, cz, w, d, top, bottom) {
+  tower(cx, cz, w, d, top, bottom, tint = null) {
     const h = top - bottom;
     if (h <= 0.05) return;
     const pos = new THREE.Vector3(cx, bottom + h / 2, cz);
     const box = makeBox(pos, _q.identity(), new THREE.Vector3(w / 2, h / 2, d / 2), { bounce: 0.25 });
-    const slot = this.pools.towers.add(pos, _q, _scale.set(w, h, d));
+    const slot = this.pools.towers.add(pos, _q, _scale.set(w, h, d), tint);
     this.towers.push({ box, slot, pool: 'towers', start: box.pos });
   }
 
@@ -321,21 +323,34 @@ export class Track {
     this.cull(ballZ + 45);
   }
 
-  // Background skyline: towers of wireframe cubes lining both sides of the descent.
+  // Background city: dim wireframe towers well off to both sides with their roofs below the track,
+  // so the road is always the tallest thing around and nothing in the skyline can stand between
+  // the camera and the way ahead. Spacing is measured from the real track (side routes included).
   buildCity(zLimit) {
     while (this.cityZ > zLimit) {
       const z = this.cityZ;
       const ref = this.refAt(z);
+      let lo = ref.x - 6,
+        hi = ref.x + 6;
+      for (const list of [this.tiles, this.hazards]) {
+        for (const t of list) {
+          const b = t.box;
+          if (b.max.z < z - 30 || b.min.z > z + 30) continue;
+          if (b.min.x < lo) lo = b.min.x;
+          if (b.max.x > hi) hi = b.max.x;
+        }
+      }
       for (const side of [-1, 1]) {
-        const w1 = this.rf(7, 13),
-          d1 = this.rf(7, 12);
-        const x1 = ref.x + side * (this.rf(19, 24) + w1 / 2);
-        this.tower(x1, z, w1, d1, ref.y + this.rf(-18, 34), ref.y - 360);
-        if (this.rng() < 0.75) {
-          const w2 = this.rf(9, 16),
-            d2 = this.rf(8, 14);
-          const x2 = ref.x + side * (this.rf(38, 62) + w2 / 2);
-          this.tower(x2, z + this.rf(-3, 3), w2, d2, ref.y + this.rf(0, 60), ref.y - 360);
+        const edge = side < 0 ? lo : hi;
+        const w1 = this.rf(8, 14),
+          d1 = this.rf(8, 13);
+        const x1 = edge + side * (this.rf(26, 36) + w1 / 2);
+        this.tower(x1, z, w1, d1, ref.y - this.rf(10, 36), ref.y - 360, CITY_NEAR);
+        if (this.rng() < 0.8) {
+          const w2 = this.rf(10, 18),
+            d2 = this.rf(9, 15);
+          const x2 = edge + side * (this.rf(58, 100) + w2 / 2);
+          this.tower(x2, z + this.rf(-3, 3), w2, d2, ref.y - this.rf(3, 30), ref.y - 360, CITY_FAR);
         }
       }
       this.cityZ -= this.rf(11, 15);
@@ -835,14 +850,21 @@ export class Track {
       setBoxTransform(panel.box, panel.box.pos);
       this.pools.tiles.set(panel.slot, panel.box.pos, panel.box.quat, _scale.set(pw, 0.6, len));
     }
-    // the building the tunnel runs through (world-aligned, decorative) — reaches the bottom too
-    const mid = floor.start.clone().addScaledVector(floor.dir, len / 2);
-    const depth = len * Math.cos(this.pitch * DEG);
-    const roofY = floor.start.y + cy + R + 0.8;
-    const topY = roofY + this.rf(8, 22);
-    for (const s of [-1, 1]) this.tower(mid.x + s * (R + 4.6), mid.z, 7.6, depth, topY, floor.end.y - 340);
-    this.tower(mid.x, mid.z, 2 * R + 1.6, depth, topY, roofY);
-    this.tower(mid.x, mid.z, fw, depth, floor.end.y - 1.7, floor.end.y - 340);
+    // the building the tunnel runs through: a slim shell that steps down with the slope and reaches
+    // the bottom like the others, kept low so it never towers over the road
+    const slices = 5;
+    for (let i = 0; i < slices; i++) {
+      const p0 = floor.start.clone().addScaledVector(floor.dir, (len * i) / slices);
+      const p1 = floor.start.clone().addScaledVector(floor.dir, (len * (i + 1)) / slices);
+      const cx = (p0.x + p1.x) / 2,
+        cz = (p0.z + p1.z) / 2,
+        dz = Math.abs(p1.z - p0.z) + 0.04;
+      const roofY = p0.y + cy + R + 0.5;
+      const topY = roofY + 2.2;
+      for (const s of [-1, 1]) this.tower(cx + s * (R + 2.4), cz, 3.2, dz, topY, p1.y - 340);
+      this.tower(cx, cz, 2 * R + 1.6, dz, topY, roofY);
+      this.tower(cx, cz, 2 * R + 1.6, dz, p1.y - 1.7, p1.y - 340);
+    }
     // speed pad
     const padPos = floor.start.clone().addScaledVector(floor.dir, 9).addScaledVector(floor.up, 0.04);
     this.pads.push({ pos: padPos, q: floor.q.clone(), slot: this.pools.pads.add(padPos, floor.q, _scale.set(fw * 0.7, 1, 6)) });
