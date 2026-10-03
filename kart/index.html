@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#14161f" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <title>Turbo Karts</title>
+    <meta name="description" content="Turbo Karts: a free 3D kart racer with drifting, items, 8 tracks, Grand Prix cups and private online races. Runs in the browser." />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2314161f'/%3E%3Crect x='14' y='26' width='36' height='14' rx='4' fill='%23ffb000'/%3E%3Ccircle cx='20' cy='44' r='6' fill='%23fff'/%3E%3Ccircle cx='44' cy='44' r='6' fill='%23fff'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="css/kart.css" />
+    <script type="importmap">
+      { "imports": { "three": "../lib/three.module.min.js", "three/addons/": "../lib/addons/" } }
+    </script>
+    <script src="../lib/peerjs.min.js"></script>
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+    <div id="loading" class="hidden"><div class="spin"></div><span id="loadingText">Building the track…</span></div>
+
+    <!-- ====================================================== HUD -->
+    <div id="hud" class="hidden">
+      <div id="hudTL">
+        <div id="place" class="p1"><span id="placeN">1</span><span id="placeS">st</span></div>
+        <div id="lap">LAP <b id="lapN">1</b>/<span id="lapT">3</span></div>
+      </div>
+      <div id="ranking"></div>
+      <div id="itemBox"><div id="itemIcon"></div><div id="itemCount"></div></div>
+      <div id="hudTR">
+        <div id="timer">0:00.000</div>
+        <div id="laps"></div>
+        <canvas id="minimap" width="180" height="180"></canvas>
+      </div>
+      <div id="speed"><b id="speedN">0</b> km/h</div>
+      <div id="driftMeter"></div>
+      <div id="count"></div>
+      <div id="banner"></div>
+      <div id="wrong" class="hidden">WRONG WAY</div>
+      <div id="fps"></div>
+      <button id="pauseBtn" aria-label="Pause">II</button>
+    </div>
+
+    <!-- ====================================================== touch controls -->
+    <div id="touch" class="hidden">
+      <div id="tSteerZone">
+        <div id="tSteer"><div id="tSteerKnob"></div></div>
+        <span class="hint">Drag left / right to steer</span>
+      </div>
+      <div id="tBtns">
+        <button data-t="item" class="tb item">ITEM</button>
+        <button data-t="drift" class="tb drift">DRIFT</button>
+        <button data-t="brake" class="tb brake">BRAKE</button>
+        <button data-t="gas" class="tb gas">GAS</button>
+      </div>
+    </div>
+
+    <div id="rotate">Turn your device sideways for a wider view</div>
+
+    <!-- ====================================================== menus -->
+    <div id="menu">
+      <section id="mMain" class="screen">
+        <div class="logo"><span class="l1">TURBO</span><span class="l2">KARTS</span></div>
+        <div class="mainBtns">
+          <button data-go="gp" class="big"><b>Grand Prix</b><small>4 races, points and trophies</small></button>
+          <button data-go="quick" class="big"><b>Quick Race</b><small>Pick any track and go</small></button>
+          <button data-go="tt" class="big"><b>Time Trial</b><small>Beat your own ghost</small></button>
+          <button data-go="online" class="big"><b>Online</b><small>Private races with friends</small></button>
+        </div>
+        <div class="row">
+          <button data-go="settings">Settings</button>
+          <button data-go="help">How to play</button>
+          <a href="../" class="btn">Arcade</a>
+        </div>
+      </section>
+
+      <section id="mSetup" class="screen hidden">
+        <header><button class="back" data-go="main">‹ Back</button><h2 id="setupTitle">Quick Race</h2></header>
+        <div class="cols">
+          <div class="panel">
+            <h3>Driver</h3>
+            <div id="drivers" class="drivers"></div>
+            <div id="driverStats" class="stats"></div>
+          </div>
+          <div class="panel">
+            <h3 id="pickTitle">Track</h3>
+            <div id="picks" class="picks"></div>
+            <div class="opt" id="classOpt">
+              <label>Engine</label>
+              <div class="seg" id="clsSeg"><button data-v="50">50cc</button><button data-v="100">100cc</button><button data-v="150">150cc</button></div>
+            </div>
+            <div id="quickOpts">
+              <div class="opt">
+                <label>Laps</label>
+                <div class="seg" id="lapSeg"><button data-v="1">1</button><button data-v="2">2</button><button data-v="3">3</button><button data-v="4">4</button><button data-v="5">5</button></div>
+              </div>
+              <div class="opt">
+                <label>Racers <b id="racersV">8</b></label>
+                <input type="range" id="racers" min="1" max="8" step="1" />
+              </div>
+              <div class="opt"><label><input type="checkbox" id="itemsOn" /> Items</label></div>
+            </div>
+            <p id="pickNote" class="note"></p>
+          </div>
+        </div>
+        <button id="startBtn" class="go">Start</button>
+      </section>
+
+      <section id="mOnline" class="screen hidden">
+        <header><button class="back" data-go="main">‹ Back</button><h2>Online</h2></header>
+        <div class="tabs"><button data-tab="host" class="on">Host a race</button><button data-tab="join">Join a race</button></div>
+        <div class="cols">
+          <div class="panel">
+            <div class="opt"><label>Your name</label><input id="onName" maxlength="14" placeholder="Player" /></div>
+            <div class="opt"><label>Driver</label><select id="onDriver"></select></div>
+            <div id="tabHost">
+              <div class="opt"><label>Password</label><input id="hostPw" maxlength="24" placeholder="(none)" autocomplete="off" /></div>
+              <p class="note">Your browser runs the race. Friends join with your address and the password.</p>
+              <button id="hostOpen" class="go">Open server</button>
+            </div>
+            <div id="tabJoin" class="hidden">
+              <div class="opt"><label>Server address</label><input id="joinAddr" placeholder="203.0.113.7:48213" autocomplete="off" /></div>
+              <div class="opt"><label>Password</label><input id="joinPw" maxlength="24" autocomplete="off" /></div>
+              <button id="joinGo" class="go">Join</button>
+              <p id="joinStatus" class="note"></p>
+            </div>
+          </div>
+          <div class="panel">
+            <h3>Network</h3>
+            <p class="note">Online races are peer to peer (WebRTC). Some school or office networks block that; if joining fails, try another network or set a TURN server below.</p>
+            <details>
+              <summary>Advanced</summary>
+              <div class="opt"><label>PeerJS server (optional)</label><input id="advPeer" placeholder="peerjs.example.com:443" /></div>
+              <div class="opt"><label>TURN server (optional)</label><input id="advTurn" placeholder="turn:turn.example.com:3478" /></div>
+              <div class="opt"><label>TURN user / password</label><input id="advTurnUser" placeholder="user" /><input id="advTurnPass" placeholder="password" /></div>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <section id="mLobby" class="screen hidden">
+        <header><button class="back" id="lobbyLeave">‹ Leave</button><h2 id="lobbyTitle">Lobby</h2></header>
+        <div class="cols">
+          <div class="panel">
+            <div id="hostInfo">
+              <h3>Server address</h3>
+              <div class="addrRow"><span id="hostAddr" class="addr" title="Click to hide / show">…</span><button id="copyAddr">Copy</button></div>
+              <label class="check"><input type="checkbox" id="streamer" /> Streamer mode (hide the address)</label>
+              <p id="hostNote" class="note"></p>
+            </div>
+            <h3>Racers</h3>
+            <div id="lobbyList" class="lobbyList"></div>
+          </div>
+          <div class="panel" id="lobbyCfgPanel">
+            <h3>Race</h3>
+            <div id="lobbyCfg"></div>
+            <div id="hostCfg">
+              <div class="opt"><label>Track</label><select id="hostTrack"></select></div>
+              <div class="opt">
+                <label>Engine</label>
+                <div class="seg" id="hostCls"><button data-v="50">50cc</button><button data-v="100">100cc</button><button data-v="150">150cc</button></div>
+              </div>
+              <div class="opt">
+                <label>Laps</label>
+                <div class="seg" id="hostLaps"><button data-v="1">1</button><button data-v="2">2</button><button data-v="3">3</button><button data-v="4">4</button><button data-v="5">5</button></div>
+              </div>
+              <div class="opt"><label>Computer racers <b id="hostBotsV">5</b></label><input type="range" id="hostBots" min="0" max="7" step="1" /></div>
+              <div class="opt"><label><input type="checkbox" id="hostItems" /> Items</label></div>
+            </div>
+          </div>
+        </div>
+        <button id="hostStart" class="go">Start race</button>
+        <p id="lobbyStatus" class="note center"></p>
+      </section>
+
+      <section id="mSettings" class="screen hidden">
+        <header><button class="back" id="settingsBack">‹ Back</button><h2>Settings</h2></header>
+        <div class="panel narrow">
+          <div class="opt"><label>Your name</label><input id="setName" maxlength="14" placeholder="Player" /></div>
+          <div class="opt">
+            <label>Graphics</label>
+            <div class="seg" id="setQuality"><button data-v="auto">Auto</button><button data-v="low">Low</button><button data-v="medium">Medium</button><button data-v="high">High</button></div>
+          </div>
+          <div class="opt"><label>Music</label><input type="range" id="setMusic" min="0" max="1" step="0.05" /></div>
+          <div class="opt"><label>Sound effects</label><input type="range" id="setSfx" min="0" max="1" step="0.05" /></div>
+          <div class="opt"><label>Camera distance</label><input type="range" id="setCam" min="0.8" max="1.4" step="0.05" /></div>
+          <div class="opt"><label class="check"><input type="checkbox" id="setAutoGas" /> Auto-accelerate on touch screens</label></div>
+          <div class="opt"><label class="check"><input type="checkbox" id="setFps" /> Show frame rate</label></div>
+          <p class="note">Graphics changes apply from the next race.</p>
+        </div>
+      </section>
+
+      <section id="mHelp" class="screen hidden">
+        <header><button class="back" data-go="main">‹ Back</button><h2>How to play</h2></header>
+        <div class="cols">
+          <div class="panel">
+            <h3>Controls</h3>
+            <table class="keys">
+              <tr><td>Steer</td><td><kbd>←</kbd><kbd>→</kbd> or <kbd>A</kbd><kbd>D</kbd></td></tr>
+              <tr><td>Accelerate</td><td><kbd>↑</kbd> or <kbd>W</kbd></td></tr>
+              <tr><td>Brake / reverse</td><td><kbd>↓</kbd> or <kbd>S</kbd></td></tr>
+              <tr><td>Hop &amp; drift</td><td><kbd>Space</kbd> or <kbd>Shift</kbd> (hold)</td></tr>
+              <tr><td>Use item</td><td><kbd>E</kbd>, <kbd>K</kbd> or <kbd>Enter</kbd></td></tr>
+              <tr><td>Throw item back</td><td>hold <kbd>↓</kbd> while using it</td></tr>
+              <tr><td>Look behind</td><td><kbd>Q</kbd> or <kbd>C</kbd></td></tr>
+              <tr><td>Pause</td><td><kbd>Esc</kbd> or <kbd>P</kbd></td></tr>
+            </table>
+            <p class="note">Gamepads work too: A / RT gas, B / LT brake, LB / RB drift, X item, Y look back. On a phone or tablet drag on the left half of the screen to steer.</p>
+          </div>
+          <div class="panel">
+            <h3>Tips</h3>
+            <ul class="tips">
+              <li><b>Drift:</b> hold drift while turning. Sparks go <span class="c1">blue</span>, then <span class="c2">orange</span>, then <span class="c3">purple</span>. Let go for a mini-turbo; the longer the drift, the bigger the boost.</li>
+              <li><b>Rocket start:</b> press accelerate as the <b>2</b> disappears. Too early and you stall.</li>
+              <li><b>Tricks:</b> press hop as you fly off a ramp for a boost when you land.</li>
+              <li><b>Items:</b> drive through the <b>?</b> boxes. Nitro, rockets that bounce off the walls, homing rockets, oil slicks, a shield and a shockwave that spins out everyone ahead. The further back you are, the better the items.</li>
+              <li>Orange chevrons on the road are boost pads. The grass and sand slow you down.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ====================================================== overlays -->
+    <div id="pause" class="overlay hidden">
+      <div class="card">
+        <h2>Paused</h2>
+        <button id="pResume" class="go">Resume</button>
+        <button id="pRestart">Restart race</button>
+        <button id="pSettings">Settings</button>
+        <button id="pQuit">Quit to menu</button>
+      </div>
+    </div>
+
+    <div id="results" class="overlay hidden">
+      <div class="card wide">
+        <h2 id="resTitle">Results</h2>
+        <p id="resSub" class="note center"></p>
+        <div id="trophy" class="hidden"></div>
+        <table id="resTable"></table>
+        <div class="row">
+          <button id="resNext" class="go">Next race</button>
+          <button id="resRetry">Race again</button>
+          <button id="resMenu">Menu</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>
