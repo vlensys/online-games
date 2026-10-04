@@ -16,6 +16,31 @@ const _e = new THREE.Euler();
 const _c = new THREE.Color();
 const ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
 
+// Lambert material whose vertices sway in the wind above `from` (local y), stronger with height.
+// Works for instanced meshes (each instance gets its own phase from its position).
+export function swayMaterial(time, from, amount, opts = {}) {
+  const m = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true, ...opts });
+  m.onBeforeCompile = (sh) => {
+    sh.uniforms.uTime = time;
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nuniform float uTime;').replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+      {
+        vec2 ph = vec2(0.0);
+        #ifdef USE_INSTANCING
+          ph = instanceMatrix[3].xz;
+        #endif
+        float k = max(transformed.y - ${from.toFixed(2)}, 0.0) * ${amount.toFixed(4)};
+        float t = uTime * 1.6 + ph.x * 0.045 + ph.y * 0.06;
+        transformed.x += (sin(t) + 0.35 * sin(t * 2.7 + 1.3)) * k;
+        transformed.z += (cos(t * 0.8 + 0.6) * 0.6) * k;
+      }`,
+    );
+  };
+  m.customProgramCacheKey = () => 'sway' + from + '_' + amount;
+  return m;
+}
+
 // Growable InstancedMesh wrapper
 class Pool {
   constructor(scene, geo, mat, cap = 16, opts = {}) {
@@ -306,12 +331,16 @@ export class PiecesView {
 }
 
 // ------------------------------------------------------------------ props
+const SWAY = { pine: [2.2, 0.012], oak: [2.6, 0.012], palm: [1.0, 0.014], bush: [0.2, 0.05] };
+
 export class PropsView {
-  constructor(scene, world) {
+  constructor(scene, world, time = { value: 0 }) {
     this.scene = scene;
     this.world = world;
     const models = MD.propModels();
     this.mat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+    this.swayMats = {};
+    for (const [t, [from, amt]] of Object.entries(SWAY)) this.swayMats[t] = swayMaterial(time, from, amt);
     this.pools = {};
     this.where = new Map();
     const byType = {};
@@ -327,7 +356,7 @@ export class PropsView {
       const geos = models[type];
       if (!geos) continue;
       this.pools[type] = geos.map((g) => {
-        const pool = new Pool(scene, g, this.mat, list.length, { cast: false, receive: false });
+        const pool = new Pool(scene, g, this.swayMats[type] || this.mat, list.length, { cast: false, receive: false });
         return pool;
       });
       list.forEach((p, i) => {

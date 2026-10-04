@@ -1,16 +1,21 @@
 // Scene setup: renderer, camera, lights, terrain, water, sky, roads, clouds + quality presets.
 import * as THREE from 'three';
-import { fbm, smoothstep } from '../core/rng.js';
+import { fbm, smoothstep, mulberry32 } from '../core/rng.js';
 import { WATER_Y } from '../core/config.js';
 import * as MD from './models.js';
 import { woodTexture, brickTexture, metalTexture } from './textures.js';
-import { PiecesView, PropsView, CharsView, ItemsView, ChestsView, FxView, StormView, GhostView } from './views.js';
+import { PiecesView, PropsView, CharsView, ItemsView, ChestsView, FxView, StormView, GhostView, swayMaterial } from './views.js';
 
 export const QUALITY = {
-  low: { ratio: 0.7, far: 460, fogNear: 140, shadows: false, clouds: 10 },
-  medium: { ratio: 1.0, far: 640, fogNear: 200, shadows: false, clouds: 22 },
-  high: { ratio: 1.5, far: 900, fogNear: 280, shadows: true, clouds: 30 },
+  low: { ratio: 0.7, far: 460, fogNear: 140, shadows: false, clouds: 10, decor: 0, decorFar: 0 },
+  medium: { ratio: 1.0, far: 640, fogNear: 200, shadows: false, clouds: 22, decor: 0.5, decorFar: 230 },
+  high: { ratio: 1.5, far: 900, fogNear: 280, shadows: true, clouds: 30, decor: 1, decorFar: 320 },
 };
+
+// ground cover budget at decor = 1 (instances over the whole island)
+const DECOR = { grass: 18000, flowerA: 2200, flowerB: 2200, pebbles: 2600 };
+const DECOR_CHUNK = 200;
+
 
 const HORIZON = new THREE.Color('#cfe7f6');
 
@@ -65,6 +70,7 @@ export class Renderer {
     this.sun.shadow.bias = -0.0006;
     this.sun.shadow.normalBias = 0.4;
     this.textures = [woodTexture(this.gl), brickTexture(this.gl), metalTexture(this.gl)];
+    this.time = { value: 0 }; // shared by the wind sway and water shaders
     this.makeSky();
     this.world = null;
     this.resize();
@@ -92,6 +98,14 @@ export class Renderer {
       if (this.terrain) this.terrain.receiveShadow = Q.shadows;
     }
     if (this.clouds) this.clouds.count = Math.min(this.cloudMax, Q.clouds);
+    if (Q.decor > 0 && !this.decor && this.map && this.worldGroup) {
+      this.decor = this.makeDecor(this.map);
+      if (this.decor) this.worldGroup.add(this.decor.group);
+    }
+    if (this.decor) {
+      this.decor.group.visible = Q.decor > 0;
+      for (const c of this.decor.chunks) c.mesh.count = Math.floor(c.full * Q.decor);
+    }
     this.resize();
   }
 
@@ -109,10 +123,19 @@ export class Renderer {
       side: THREE.BackSide,
       depthWrite: false,
       fog: false,
-      uniforms: { top: { value: new THREE.Color('#3d8fe0') }, mid: { value: new THREE.Color('#8cc4ef') }, bot: { value: HORIZON.clone() } },
+      uniforms: {
+        top: { value: new THREE.Color('#3d8fe0') },
+        mid: { value: new THREE.Color('#8cc4ef') },
+        bot: { value: HORIZON.clone() },
+        sunDir: { value: this.sunDir.clone() },
+      },
       vertexShader: 'varying vec3 vP; void main(){ vP = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
-      fragmentShader: `uniform vec3 top; uniform vec3 mid; uniform vec3 bot; varying vec3 vP;
-        void main(){ float h = vP.y; vec3 c = h > 0.18 ? mix(mid, top, smoothstep(0.18, 0.8, h)) : mix(bot, mid, smoothstep(0.0, 0.18, h));
+      fragmentShader: `uniform vec3 top; uniform vec3 mid; uniform vec3 bot; uniform vec3 sunDir; varying vec3 vP;
+        void main(){ vec3 d = normalize(vP); float h = d.y;
+        vec3 c = h > 0.18 ? mix(mid, top, smoothstep(0.18, 0.8, h)) : mix(bot, mid, smoothstep(0.0, 0.18, h));
+        float s = max(dot(d, sunDir), 0.0);
+        c += vec3(1.0, 0.92, 0.75) * (pow(s, 12.0) * 0.18 + pow(s, 90.0) * 0.35);
+        c = mix(c, vec3(1.0, 0.98, 0.9), smoothstep(0.9975, 0.9988, s));
         gl_FragColor = vec4(c, 1.0); }`,
     });
     this.sky = new THREE.Mesh(g, m);
@@ -144,13 +167,15 @@ export class Renderer {
     const group = new THREE.Group();
     this.worldGroup = group;
     this.scene.add(group);
+    this.map = map;
+    this.decor = null; // ground cover is built by applyQuality() when the preset wants it
     this.terrain = this.makeTerrain(map);
     group.add(this.terrain);
     group.add(this.makeRoads(map));
     group.add(this.makeWater());
     this.views = {
       pieces: new PiecesView(group, this.textures),
-      props: new PropsView(group, world),
+      props: new PropsView(group, world, this.time),
       chars: new CharsView(group, 72),
       items: new ItemsView(group),
       chests: new ChestsView(group, map, loot.chests, loot.boxes),
@@ -179,6 +204,126 @@ export class Renderer {
     this.worldGroup = null;
     this.views = null;
     this.terrain = null;
+    this.decor = null;
+    this.map = null;
+  }
+
+  // Grass, flowers and pebbles in noise-driven patches (visual only, no collision), split into
+  // chunks so off-screen and far-away patches are skipped.
+  makeDecor(map) {
+    const D = MD.decoModels();
+    if (!D || !this.terrain) return null;
+    const T = map.terrain;
+    const tcol = this.terrain.geometry.attributes.color;
+    const rnd = mulberry32((map.seed ^ 0x5eed) >>> 0);
+    const seed = map.seed;
+    const half = T.half;
+    const nrm = [0, 1, 0];
+    const roads = map.roads.map((r) => {
+      const dx = r.x2 - r.x1;
+      const dz = r.z2 - r.z1;
+      return { ...r, dx, dz, l2: Math.max(1e-6, dx * dx + dz * dz) };
+    });
+    const nearRoad = (x, z) => {
+      for (const r of roads) {
+        const t = Math.max(0, Math.min(1, ((x - r.x1) * r.dx + (z - r.z1) * r.dz) / r.l2));
+        const ex = r.x1 + r.dx * t - x;
+        const ez = r.z1 + r.dz * t - z;
+        if (ex * ex + ez * ez < 30) return true;
+      }
+      return false;
+    };
+    const blocked = (x, z) => {
+      for (const f of map.footprints) if (x > f.x0 - 1.5 && x < f.x1 + 1.5 && z > f.z0 - 1.5 && z < f.z1 + 1.5) return true;
+      return false;
+    };
+    const nChunk = Math.ceil((2 * half) / DECOR_CHUNK);
+    const buckets = {};
+    const push = (type, x, y, z, s, rot, r, g, b) => {
+      const ci = Math.min(nChunk - 1, Math.floor((x + half) / DECOR_CHUNK));
+      const cj = Math.min(nChunk - 1, Math.floor((z + half) / DECOR_CHUNK));
+      const key = type + ':' + ci + ':' + cj;
+      (buckets[key] = buckets[key] || { type, ci, cj, list: [] }).list.push(x, y, z, s, rot, r, g, b);
+    };
+    const tries = { grass: DECOR.grass * 3, flowerA: DECOR.flowerA * 6, flowerB: DECOR.flowerB * 6, pebbles: DECOR.pebbles * 3 };
+    for (const type of Object.keys(DECOR)) {
+      let placed = 0;
+      for (let k = 0; k < tries[type] && placed < DECOR[type]; k++) {
+        const x = (rnd() * 2 - 1) * half * 0.98;
+        const z = (rnd() * 2 - 1) * half * 0.98;
+        const r1 = rnd();
+        const r2 = rnd();
+        const h = T.heightAt(x, z);
+        if (type === 'pebbles' ? h < 0.6 || h > 70 : h < 3.2 || h > 56) continue;
+        const patch = fbm(x * 0.012, z * 0.012, seed + (type === 'grass' ? 77 : type === 'pebbles' ? 79 : 78), 2);
+        if (type === 'grass' && patch < 0.42) continue;
+        if ((type === 'flowerA' || type === 'flowerB') && patch < (type === 'flowerA' ? 0.6 : 0.62)) continue;
+        if (type === 'pebbles' && patch < 0.5) continue;
+        T.normalAt(x, z, nrm);
+        if (nrm[1] < (type === 'pebbles' ? 0.7 : 0.84)) continue;
+        if (blocked(x, z) || nearRoad(x, z)) continue;
+        // tint grass with the terrain color under it so it blends into the ground
+        let cr = 1;
+        let cg = 1;
+        let cb = 1;
+        if (type === 'grass') {
+          const i = Math.max(0, Math.min(T.n - 1, Math.round((x + half) / T.cell)));
+          const j = Math.max(0, Math.min(T.n - 1, Math.round((z + half) / T.cell)));
+          const vi = j * T.n + i;
+          cr = tcol.getX(vi);
+          cg = tcol.getY(vi);
+          cb = tcol.getZ(vi);
+        } else {
+          cr = cg = cb = 0.88 + r2 * 0.24;
+        }
+        const s = type === 'grass' ? 0.8 + r1 * 0.7 : 0.75 + r1 * 0.5;
+        push(type, x, h - 0.04, z, s, r2 * Math.PI * 2, cr, cg, cb);
+        placed++;
+      }
+    }
+    const group = new THREE.Group();
+    const mats = {
+      grass: swayMaterial(this.time, 0.0, 0.18), // blades are modelled double sided
+      flowerA: swayMaterial(this.time, 0.05, 0.12),
+      flowerB: swayMaterial(this.time, 0.05, 0.12),
+      pebbles: new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }),
+    };
+    const chunks = [];
+    const m4 = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const up = new THREE.Vector3(0, 1, 0);
+    const p = new THREE.Vector3();
+    const sc = new THREE.Vector3();
+    const c = new THREE.Color();
+    // shuffle instance order so lowering the count thins patches evenly instead of emptying areas
+    for (const b of Object.values(buckets)) {
+      const n = b.list.length / 8;
+      const order = Array.from({ length: n }, (_, i) => i);
+      for (let i = n - 1; i > 0; i--) {
+        const j = Math.floor(rnd() * (i + 1));
+        [order[i], order[j]] = [order[j], order[i]];
+      }
+      const mesh = new THREE.InstancedMesh(D[b.type], mats[b.type], n);
+      mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3);
+      order.forEach((src, i) => {
+        const L = b.list;
+        const o = src * 8;
+        q.setFromAxisAngle(up, L[o + 4]);
+        m4.compose(p.set(L[o], L[o + 1], L[o + 2]), q, sc.set(L[o + 3], L[o + 3], L[o + 3]));
+        mesh.setMatrixAt(i, m4);
+        mesh.setColorAt(i, c.setRGB(L[o + 5], L[o + 6], L[o + 7]));
+      });
+      mesh.computeBoundingSphere();
+      mesh.matrixAutoUpdate = false;
+      group.add(mesh);
+      chunks.push({
+        mesh,
+        full: n,
+        x: -half + (b.ci + 0.5) * DECOR_CHUNK,
+        z: -half + (b.cj + 0.5) * DECOR_CHUNK,
+      });
+    }
+    return { group, chunks };
   }
 
   makeTerrain(map) {
@@ -332,6 +477,28 @@ export class Renderer {
     const g = new THREE.PlaneGeometry(4000, 4000, 1, 1);
     g.rotateX(-Math.PI / 2);
     const m = new THREE.MeshLambertMaterial({ color: '#2ea6de', transparent: true, opacity: 0.8, depthWrite: false });
+    // gentle moving ripples + sparkles (world-space, so the 1-quad plane needs no extra vertices)
+    m.onBeforeCompile = (sh) => {
+      sh.uniforms.uTime = this.time;
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying vec2 vWXZ;')
+        .replace('#include <project_vertex>', '#include <project_vertex>\nvWXZ = (modelMatrix * vec4(transformed, 1.0)).xz;');
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying vec2 vWXZ;\nuniform float uTime;')
+        .replace(
+          '#include <color_fragment>',
+          `#include <color_fragment>
+          {
+            vec2 p = vWXZ;
+            float w = sin(p.x * 0.085 + uTime * 0.7) * sin(p.y * 0.105 - uTime * 0.55)
+              + 0.55 * sin((p.x + p.y) * 0.21 + uTime * 1.25) + 0.3 * sin((p.x - p.y) * 0.37 - uTime * 1.7);
+            float near = 1.0 - smoothstep(60.0, 260.0, length(vViewPosition)); // avoid shimmer noise far away
+            diffuseColor.rgb *= 1.0 + 0.06 * w * (0.4 + 0.6 * near);
+            diffuseColor.rgb += vec3(0.16, 0.18, 0.18) * smoothstep(1.35, 1.65, w) * near;
+          }`,
+        );
+    };
+    m.customProgramCacheKey = () => 'water';
     const mesh = new THREE.Mesh(g, m);
     mesh.position.y = WATER_Y;
     mesh.renderOrder = 1;
@@ -341,7 +508,17 @@ export class Renderer {
 
   // Follow the camera with sky and shadow frustum
   frame(dt, t) {
+    this.time.value = (this.time.value + Math.min(dt || 0, 0.1)) % 3600;
     this.sky.position.copy(this.camera.position);
+    if (this.decor && this.decor.group.visible) {
+      const far = QUALITY[this.q].decorFar + DECOR_CHUNK * 0.71;
+      const cp = this.camera.position;
+      for (const c of this.decor.chunks) {
+        const dx = c.x - cp.x;
+        const dz = c.z - cp.z;
+        c.mesh.visible = dx * dx + dz * dz < far * far;
+      }
+    }
     if (this.sun.castShadow) {
       const p = this.camera.position;
       this.sun.target.position.set(p.x, 0, p.z);

@@ -1,10 +1,80 @@
-// Procedural low-poly models. Every model is one merged BufferGeometry with vertex colors
-// (drawn with flat-shaded Lambert materials, instanced where there are many copies).
+// Low-poly models. Every model is one merged BufferGeometry with vertex colors (drawn with
+// flat-shaded Lambert materials, instanced where there are many copies).
+// The detailed versions are built in Blender (tools/build_models.py -> assets/models.glb) and
+// loaded once at boot; each function below falls back to its procedural shape if they're missing.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { mulberry32 } from '../core/rng.js';
 
 const _c = new THREE.Color();
+
+// ------------------------------------------------------------------ Blender library
+const LIB = new Map();
+
+// Same layout as paint(): non-indexed, position + flat normals + rgb color, no uvs.
+function fromGltf(src) {
+  const g = src.index ? src.toNonIndexed() : src.clone();
+  const col = g.attributes.color;
+  const n = g.attributes.position.count;
+  const rgb = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    rgb[i * 3] = col ? col.getX(i) : 1;
+    rgb[i * 3 + 1] = col ? col.getY(i) : 1;
+    rgb[i * 3 + 2] = col ? col.getZ(i) : 1;
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', g.attributes.position.clone());
+  out.setAttribute('color', new THREE.BufferAttribute(rgb, 3));
+  out.computeVertexNormals();
+  return out;
+}
+
+// Load the Blender models; resolves false (procedural fallback) on any error or timeout.
+export function loadModels(url, timeoutMs = 10000) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      resolve(ok);
+    };
+    setTimeout(() => {
+      if (!done) console.warn('models: load timed out, using procedural models');
+      finish(false);
+    }, timeoutMs);
+    new GLTFLoader().load(
+      url,
+      (gltf) => {
+        try {
+          gltf.scene.updateMatrixWorld(true);
+          gltf.scene.traverse((o) => {
+            if (!o.isMesh) return;
+            const g = fromGltf(o.geometry);
+            g.applyMatrix4(o.matrixWorld);
+            LIB.set(o.name, g);
+          });
+          finish(LIB.size > 0);
+        } catch (e) {
+          console.warn('models: could not read', e);
+          LIB.clear();
+          finish(false);
+        }
+      },
+      undefined,
+      (e) => {
+        console.warn('models: could not load', url, e);
+        finish(false);
+      },
+    );
+  });
+}
+
+// a fresh copy (callers own and dispose their geometry), or null when not loaded
+function lib(name) {
+  const g = LIB.get(name);
+  return g ? g.clone() : null;
+}
 
 export function paint(geo, hex, shade = 1) {
   let g = geo.index ? geo.toNonIndexed() : geo;
@@ -141,10 +211,30 @@ export function propModels() {
     ]),
   ];
   M.hay = [merge([cyl(0.95, 0.95, 1.5, 10, '#e4c35c', { y: 0.75 }), cyl(0.97, 0.97, 0.12, 10, '#c9a441', { y: 0.75 })])];
+  for (const k of Object.keys(M)) {
+    if (!LIB.has(`prop_${k}_0`)) continue;
+    const list = [];
+    for (let i = 0; LIB.has(`prop_${k}_${i}`); i++) list.push(lib(`prop_${k}_${i}`));
+    for (const g of M[k]) g.dispose();
+    M[k] = list;
+  }
   return M;
 }
 
+// Ground cover (grass, flowers, pebbles) - only exists with the Blender models.
+export function decoModels() {
+  const D = {};
+  for (const k of ['grass', 'flowerA', 'flowerB', 'pebbles']) {
+    const g = lib('deco_' + k);
+    if (!g) return null;
+    D[k] = g;
+  }
+  return D;
+}
+
 export function landmarkModel(type) {
+  const g = lib('lm_' + type);
+  if (g) return g;
   if (type === 'lighthouse') {
     const parts = [];
     for (let i = 0; i < 6; i++) parts.push(cyl(3.3 - (i + 1) * 0.18, 3.3 - i * 0.18, 4, 12, i % 2 ? '#d8403a' : '#f7f4ee', { y: 2 + i * 4 - 1 }));
@@ -221,6 +311,13 @@ export function charParts() {
     cyl(0.025, 0.025, 1.6, 4, '#333333', { x: 0.9, y: 2.6, rz: 0.55 }),
     cyl(0.025, 0.025, 1.6, 4, '#333333', { x: -0.9, y: 2.6, rz: -0.55 }),
   ]);
+  for (const k of Object.keys(P)) {
+    const g = lib('char_' + k);
+    if (g) {
+      P[k].dispose();
+      P[k] = g;
+    }
+  }
   return P;
 }
 
@@ -276,11 +373,18 @@ export function weaponModels() {
     body: merge([cyl(0.11, 0.11, 1.1, 8, '#4d5a3d', { rx: Math.PI / 2, y: 0.12, z: -0.2 }), box(0.07, 0.15, 0.08, dark, { y: -0.04, z: 0 }), box(0.16, 0.14, 0.14, dark, { y: 0.12, z: 0.35 })]),
     acc: cyl(0.125, 0.125, 0.14, 8, '#ffffff', { rx: Math.PI / 2, y: 0.12, z: -0.72 }),
   };
+  for (const t of Object.keys(W)) {
+    const body = lib(`wpn_${t}_body`);
+    const acc = lib(`wpn_${t}_acc`);
+    if (body && acc) W[t] = { body, acc };
+  }
   return W;
 }
 
 // ------------------------------------------------------------------ items on the floor
 export function consumableModel(t) {
+  const g = lib('cons_' + t);
+  if (g) return g;
   if (t === 'bandage') return merge([cyl(0.2, 0.2, 0.18, 10, '#f3efe6', { rz: Math.PI / 2 }), cyl(0.08, 0.08, 0.2, 8, '#d9cdb2', { rz: Math.PI / 2 })]);
   if (t === 'medkit') return merge([box(0.52, 0.34, 0.36, '#f7f7f7'), box(0.28, 0.08, 0.37, '#e0403a', { y: 0 }), box(0.08, 0.28, 0.37, '#e0403a'), box(0.2, 0.06, 0.1, '#888888', { y: 0.2 })]);
   if (t === 'shieldS') return merge([part(new THREE.SphereGeometry(0.17, 8, 6), '#4cc6ff'), cyl(0.06, 0.06, 0.14, 6, '#e8e8e8', { y: 0.2 })]);
@@ -288,10 +392,14 @@ export function consumableModel(t) {
 }
 
 export function ammoModel() {
+  const g = lib('ammo');
+  if (g) return g;
   return merge([box(0.46, 0.26, 0.3, '#ffffff'), box(0.48, 0.06, 0.32, '#3a3a3a', { y: 0.1 })]);
 }
 
 export function matModel(i) {
+  const g = lib('mat_' + i);
+  if (g) return g;
   if (i === 0) return merge([box(0.9, 0.1, 0.28, '#c98e55', { y: -0.1 }), box(0.9, 0.1, 0.28, '#b57a45', { y: 0.0, z: 0.05, ry: 0.3 }), box(0.9, 0.1, 0.28, '#d49a60', { y: 0.1, ry: -0.2 })]);
   if (i === 1) return merge([box(0.4, 0.18, 0.22, '#c2583f', { x: -0.2 }), box(0.4, 0.18, 0.22, '#b24c35', { x: 0.22 }), box(0.4, 0.18, 0.22, '#cf6a4c', { y: 0.18 })]);
   return merge([box(0.8, 0.05, 0.5, '#a3aeb9', { y: -0.05 }), box(0.8, 0.05, 0.5, '#8d98a3', { y: 0.03, ry: 0.25 }), box(0.8, 0.05, 0.5, '#b7c1cb', { y: 0.1, ry: -0.15 })]);
@@ -299,6 +407,8 @@ export function matModel(i) {
 
 // ------------------------------------------------------------------ chests / boxes / bus
 export function chestModels() {
+  const parts = ['body', 'lid', 'boxBody', 'boxLid'];
+  if (parts.every((k) => LIB.has('chest_' + k))) return Object.fromEntries(parts.map((k) => [k, lib('chest_' + k)]));
   return {
     body: merge([
       box(1.0, 0.56, 0.62, '#e8b33a', { y: 0.28 }),
@@ -319,6 +429,8 @@ export function chestModels() {
 }
 
 export function busModel() {
+  const g = lib('bus');
+  if (g) return g;
   const parts = [
     box(3.4, 2.7, 9.6, '#2f73d8', { y: 1.9 }),
     box(3.45, 0.7, 9.65, '#f4f4f4', { y: 3.45 }),

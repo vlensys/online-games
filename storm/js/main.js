@@ -5,6 +5,7 @@ import { generateMap } from './core/mapgen.js';
 import { World } from './core/world.js';
 import { generateFloorLoot } from './core/items.js';
 import { Renderer, webglAvailable } from './client/render.js';
+import { loadModels } from './client/models.js';
 import { Hud, fmtTime } from './client/hud.js';
 import { Input } from './client/input.js';
 import { Touch } from './client/touch.js';
@@ -853,4 +854,7 @@ async function doJoin() {
 }
 
 void netMode;
-boot();
+// the Blender models are optional: boot either way once they load, fail or time out
+loadModels(new URL('../assets/models.glb', import.meta.url).href)
+  .catch(() => false)
+  .then(() => boot());
