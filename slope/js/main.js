@@ -427,6 +427,8 @@ function resetWorld() {
   ball.jumpLock = 0;
   ball.dashCD = 0;
   ball.dashTime = 0;
+  ball.sideDir = 0;
+  ball.dashAge = 9;
   ball.phase = 0;
   ball.shield = false;
   ball.invuln = 0;
@@ -456,6 +458,8 @@ function resetWorld() {
   audio.intensity = 0;
   camera.position.copy(ball.pos).add(CAM_START);
   camOffset.copy(CAM_START);
+  camFollow.copy(ball.pos);
+  camAdj.set(0, 0, 0);
   camFollow.copy(ball.pos);
 }
 
@@ -716,8 +720,10 @@ function maybeRecenter() {
   track.shift(o);
   ball.pos.add(o);
   ball.prev.add(o);
+  renderPos.add(o);
   camera.position.add(o);
   camLook.add(o);
+  camFollow.add(o);
   particles.shift(o);
   shards.shift(o);
   trail.shift(o);
@@ -852,6 +858,8 @@ const CAM_CLOSE = new THREE.Vector3(0, 5.4, 6.2);
 const CAM_PITCH = THREE.MathUtils.degToRad(-45.23);
 const camOffset = new THREE.Vector3().copy(CAM_START);
 const camFollow = new THREE.Vector3();
+const camAdj = new THREE.Vector3(); // how far the camera is moved off its spot to see the ball
+const _camRaw = new THREE.Vector3();
 function updateCamera(dt) {
   const p = renderPos;
   if (S.state === 'menu') {
@@ -876,7 +884,20 @@ function updateCamera(dt) {
     camFollow.y = damp(camFollow.y, p.y, 22, dt);
     camFollow.z = p.z;
     _desired.copy(camFollow).add(camOffset);
-    if (S.state !== 'dead') clearCameraSpot(_desired, !!zone);
+    if (S.state !== 'dead') {
+      _camRaw.copy(_desired);
+      clearCameraSpot(_desired, !!zone);
+      // ease over buildings (quick up, slow back down) instead of hopping in 1.5 m steps, and into
+      // tunnels instead of cutting; out in the open it never sinks into a building or rooftop
+      _tmp.subVectors(_desired, _camRaw);
+      const k = zone ? 10 : _tmp.lengthSq() > camAdj.lengthSq() ? 16 : 3;
+      camAdj.lerp(_tmp, 1 - Math.exp(-k * dt));
+      _desired.copy(_camRaw).add(camAdj);
+      if (!zone && !window.__noCamClear) {
+        const y = minCamY(_desired, 0.7);
+        if (y > _desired.y) _desired.y = y + 0.01;
+      }
+    }
     camera.position.copy(_desired);
     camera.rotation.set(CAM_PITCH, 0, 0);
   } else {
