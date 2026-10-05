@@ -115,6 +115,7 @@ export class Game {
       temps: new Map(),
       lastSend: 0,
       landT: 0,
+      jumpBuf: 0,
       lastHitPos: null,
       dead: null,
       placeHeld: 0,
@@ -817,9 +818,13 @@ export class Game {
     let fallDmg = 0;
     let landed = false;
     const wasMode = c.mode;
+    // a jump pressed just before landing still happens on touchdown
+    if (A.jump) me.jumpBuf = 0.15;
     for (let i = 0; i < n; i++) {
-      inp.jump = i === 0 && A.jump;
+      inp.jump = me.jumpBuf > 0;
       stepChar(this.world, c, inp, h, me.out);
+      me.jumpBuf -= h;
+      if (me.out.jumped || me.out.deployed) me.jumpBuf = 0;
       if (me.out.fallDmg) fallDmg += me.out.fallDmg;
       if (me.out.landed) landed = true;
       if (me.out.jumped) me.crouch = false;
@@ -990,15 +995,21 @@ export class Game {
     let up = 0.3;
     let collide = true;
     let fp = false;
+    let feetY = c.y;
+    let smoothY = false;
+    let onGround = false;
     const held = this.held();
     const w = held && C.WEAPONS[held.t];
     let zoom = 1;
     this.scoped = false;
     let follow = null;
     if (!me.alive) {
-      const pl = this.players.get(this.specId);
+      let pl = this.players.get(this.specId);
+      if (!(pl && pl.vis && pl.alive)) {
+        this.specId = this.pickSpec(0) || this.specId;
+        pl = this.players.get(this.specId);
+      }
       if (pl && pl.vis && pl.alive) follow = pl.r;
-      else if (this.state !== 'end' || !follow) this.specId = this.pickSpec(0) || this.specId;
     }
     if (this.state === 'wait') {
       const a = this.clock * 0.05;
@@ -1021,6 +1032,9 @@ export class Game {
       tx = follow.x;
       ty = follow.y + 1.55;
       tz = follow.z;
+      feetY = follow.y;
+      smoothY = follow.mode === M_GROUND;
+      onGround = follow.grounded;
       if (follow.mode === M_FALL || follow.mode === M_GLIDE) {
         dist = 7;
         up = 1.5;
@@ -1034,6 +1048,8 @@ export class Game {
       tx = c.x;
       ty = c.y + (c.crouch ? CROUCH_EYE : 1.55);
       tz = c.z;
+      smoothY = c.mode === M_GROUND || c.mode === M_SWIM;
+      onGround = c.grounded || c.mode === M_SWIM;
       if (c.mode === M_FALL) {
         dist = 6.5;
         up = 1.4;
@@ -1047,6 +1063,34 @@ export class Game {
         up = 0.6;
         ty = c.y + 1.2;
       }
+    }
+    // ease between rig shapes (bus -> skydive -> glide -> ground) instead of cutting
+    const rig = this.rig || (this.rig = { dist, right, up, y: ty, def: 0, tgt: '' });
+    const tgt = follow ? 'p' + this.specId : 'me';
+    if (rig.tgt !== tgt || Math.abs(ty - rig.y) > 4) {
+      rig.y = ty;
+      rig.def = 0;
+      if (rig.tgt !== tgt && rig.tgt) {
+        rig.dist = dist;
+        rig.right = right;
+        rig.up = up;
+      }
+      rig.tgt = tgt;
+    }
+    const kr = 1 - Math.exp(-dt * (rig.dist > 12 ? 3 : 7));
+    rig.dist += (dist - rig.dist) * kr;
+    rig.right += (right - rig.right) * kr;
+    rig.up += (up - rig.up) * kr;
+    dist = rig.dist;
+    right = rig.right;
+    up = rig.up;
+    // soften steps, ledges and steep slopes on the ground (jumps and falls stay tight)
+    if (smoothY) {
+      rig.y += (ty - rig.y) * (1 - Math.exp(-dt * (!onGround ? 30 : ty > rig.y ? 14 : 22)));
+      rig.y = Math.max(ty - 0.6, Math.min(ty + 0.6, rig.y));
+      ty = rig.y;
+    } else rig.y = ty;
+    if (me.alive && !follow && c.mode !== M_BUS) {
       // ADS
       const canAds = c.mode === M_GROUND && !me.build && w && !w.melee && !me.use;
       me.ads = canAds && A.ads;
@@ -1058,9 +1102,9 @@ export class Game {
           this.scoped = true;
           zoom = w.zoom;
         }
-        dist = 3.7 - 1.9 * me.adsT;
-        right = 0.78 - 0.12 * me.adsT;
-        up = 0.3 - 0.05 * me.adsT;
+        dist += (1.8 - dist) * me.adsT;
+        right += (0.66 - right) * me.adsT;
+        up += (0.25 - up) * me.adsT;
       }
     }
     // a touch wider while sprinting on the ground
@@ -1091,38 +1135,41 @@ export class Game {
     const pivot = _v1.set(tx, ty, tz);
     if (fp) {
       cam.position.set(c.x, eyeY(c), c.z);
+      rig.def = 0;
     } else {
-      const want = _v2.set(tx - fx * dist + rx * right, ty - fy * dist + up, tz - fz * dist + rz * right);
+      // looking up swings the boom down less (and a bit shorter) so it doesn't dig into the floor
+      let bp = pitch;
+      if (bp > 0.15) {
+        bp = 0.15 + (bp - 0.15) * 0.6;
+        dist *= 1 - 0.3 * Math.min(1, (pitch - 0.15) / 1.3);
+      }
+      const bcp = Math.cos(bp);
+      const want = _v2.set(tx + Math.sin(yaw) * bcp * dist + rx * right, ty - Math.sin(bp) * dist + up, tz + Math.cos(yaw) * bcp * dist + rz * right);
       this.camNear = 99;
       if (collide) {
-        // try the normal spot, then raised spots (steep slopes right behind the player)
-        let bestT = -1;
-        let bx = 0;
-        let by = 0;
-        let bz = 0;
-        const wx = want.x;
-        const wy = want.y;
-        const wz = want.z;
-        for (let k = 0; k < 3; k++) {
-          const dx = wx - pivot.x;
-          const dy = wy + k * 1.3 - pivot.y;
-          const dz = wz - pivot.z;
-          const L = Math.sqrt(dx * dx + dy * dy + dz * dz);
-          const hit = this.world.raycast(pivot.x, pivot.y, pivot.z, dx / L, dy / L, dz / L, L + 0.3, 7);
-          const t = hit.kind && hit.t < L + 0.3 ? Math.max(0.25, hit.t - 0.3) : L;
-          if (t > bestT + 0.4) {
-            bestT = t;
-            bx = dx / L;
-            by = dy / L;
-            bz = dz / L;
-          }
-          if (t >= L - 0.01 || hit.kind !== HIT_TERRAIN) break;
-        }
-        want.set(pivot.x + bx * bestT, pivot.y + by * bestT, pivot.z + bz * bestT);
-        this.camNear = bestT;
-        // keep the near plane out of walls/floors right beside the camera
         const W = this.world;
-        if (W.pushOut(want.x, want.z, want.y - 0.3, want.y + 0.3, 0.3)) {
+        // slide along the floor rather than pulling in towards the head
+        const fy0 = W.groundAt(want.x, want.z, feetY + 0.3, 0.25);
+        if (want.y < fy0 + 0.45) want.y = fy0 + 0.45;
+        let dx = want.x - pivot.x;
+        let dy = want.y - pivot.y;
+        let dz = want.z - pivot.z;
+        const L = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+        dx /= L;
+        dy /= L;
+        dz /= L;
+        // trees don't push the camera in (it just passes through the leaves)
+        const hit = W.raycast(pivot.x, pivot.y, pivot.z, dx, dy, dz, L + 0.3, 1 | 2 | 4 | 16);
+        const t = hit.kind && hit.t < L + 0.3 ? Math.max(0.25, hit.t - 0.3) : L;
+        // pull in at once (never see through walls), ease back out
+        const def = L - t;
+        if (def >= rig.def) rig.def = def;
+        else rig.def += (def - rig.def) * (1 - Math.exp(-dt * 5));
+        const len = Math.max(0.25, L - rig.def);
+        want.set(pivot.x + dx * len, pivot.y + dy * len, pivot.z + dz * len);
+        this.camNear = len;
+        // keep the near plane out of walls/floors right beside the camera
+        if (W.pushOut(want.x, want.z, want.y - 0.3, want.y + 0.3, 0.3, true)) {
           want.x = W._n[0];
           want.z = W._n[1];
         }
@@ -1130,10 +1177,10 @@ export class Game {
         if (want.y - gy < 0.3) want.y = gy + 0.3;
         const cy = W.ceilingAt(want.x, want.z, want.y, 0.25);
         if (cy - want.y < 0.25 && cy - 0.25 > gy + 0.3) want.y = cy - 0.25;
-        const wh = this.world.terrain.heightAt(want.x, want.z);
+        const wh = W.terrain.heightAt(want.x, want.z);
         if (want.y < wh + 0.3) want.y = wh + 0.3;
         if (want.y < 0.35 && wh < 0) want.y = Math.max(want.y, 0.35);
-      }
+      } else rig.def = 0;
       cam.position.copy(want);
     }
     cam.position.x += sx;

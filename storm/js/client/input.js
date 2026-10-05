@@ -85,16 +85,24 @@ export class Input {
     e.preventDefault();
   }
 
-  lock() {
+  // onFail: the browser refused (no user gesture, or too soon after Esc)
+  lock(onFail) {
+    const fail = () => {
+      if (!this.locked && onFail) onFail();
+    };
+    const plain = () => {
+      try {
+        const p2 = this.canvas.requestPointerLock();
+        if (p2 && p2.catch) p2.catch(fail);
+      } catch (e) {
+        fail();
+      }
+    };
     try {
       const p = this.canvas.requestPointerLock({ unadjustedMovement: true });
-      if (p && p.catch) p.catch(() => this.canvas.requestPointerLock());
+      if (p && p.catch) p.catch(plain);
     } catch (e) {
-      try {
-        this.canvas.requestPointerLock();
-      } catch (e2) {
-        /* ignore */
-      }
+      plain();
     }
   }
 

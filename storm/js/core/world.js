@@ -191,7 +191,7 @@ export class World {
   }
 
   // Push a character circle out of walls/boxes/props. Returns [x,z] (in this._n) and count of contacts.
-  pushOut(x, z, feetY, headY, r = CHAR.radius) {
+  pushOut(x, z, feetY, headY, r = CHAR.radius, noTrees = false) {
     const lim = feetY + CHAR.step;
     let contacts = 0;
     let hitPiece = null;
@@ -227,6 +227,7 @@ export class World {
         }
       });
       this.queryProps(x - r - 5, z - r - 5, x + r + 5, z + r + 5, (p) => {
+        if (noTrees && PROP_TYPES[p.type].tree) return;
         for (const sh of p.shapes) {
           if (sh.y1 <= lim || sh.y0 >= headY) continue;
           if (sh.t === 'cyl') {
@@ -326,7 +327,7 @@ export class World {
     return Infinity;
   }
 
-  rayProps(ox, oy, oz, dx, dy, dz, maxT) {
+  rayProps(ox, oy, oz, dx, dy, dz, maxT, noTrees = false) {
     this.hitProp = null;
     let best = maxT;
     let bestP = null;
@@ -351,6 +352,7 @@ export class World {
           const p = arr[i];
           if (p._s === s || !p.alive) continue;
           p._s = s;
+          if (noTrees && PROP_TYPES[p.type].tree) continue;
           for (const sh of p.hitShapes) {
             const t = rayShape(ox, oy, oz, dx, dy, dz, sh, best, n);
             if (t < best) {
@@ -379,7 +381,7 @@ export class World {
     return bestP ? best : Infinity;
   }
 
-  // Full raycast. mask bits: 1 terrain, 2 pieces, 4 props, 8 water
+  // Full raycast. mask bits: 1 terrain, 2 pieces, 4 props, 8 water, 16 (with 4) skip trees
   raycast(ox, oy, oz, dx, dy, dz, maxT, mask = 7, ignorePiece = null) {
     const hit = this.hit;
     hit.t = Infinity;
@@ -399,7 +401,7 @@ export class World {
       }
     }
     if (mask & 4) {
-      const t = this.rayProps(ox, oy, oz, dx, dy, dz, best);
+      const t = this.rayProps(ox, oy, oz, dx, dy, dz, best, (mask & 16) !== 0);
       if (t < best) {
         best = t;
         hit.kind = HIT_PROP;

@@ -28,6 +28,8 @@ export const CHAR = {
   swimSpeed: 3.9,
   accelGround: 60,
   accelAir: 10,
+  climb: 4.2, // max vertical speed walking up steep terrain
+  coyote: 0.12, // grace time to still jump after walking off an edge
   fallSpeed: 21, // skydive vertical speed
   diveSpeed: 44, // looking straight down
   fallHoriz: 22,

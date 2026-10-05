@@ -424,7 +424,8 @@ function showPause(on) {
 
 function resume() {
   showPause(false);
-  if (!app.touchMode) app.input.lock();
+  // Chrome refuses to re-lock right after Esc: bring the pause menu back rather than leave the mouse dead
+  if (!app.touchMode) app.input.lock(() => app.game && showPause(true));
 }
 
 // ------------------------------------------------------------------ sessions

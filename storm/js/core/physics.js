@@ -20,6 +20,7 @@ export function makeChar(x = 0, y = 0, z = 0) {
     crouch: false,
     peakY: y,
     blocked: 0,
+    coyote: 0,
   };
 }
 
@@ -87,6 +88,7 @@ function wishDir(c, inp, o) {
 }
 
 const wd = [0, 0];
+const tn = [0, 1, 0];
 
 export function stepChar(world, c, inp, dt, out) {
   out.landed = false;
@@ -135,14 +137,22 @@ function stepGround(world, c, inp, dt, out) {
   else if (inp.ads) speed = CHAR.adsSpeed;
   else if (inp.sprint && inp.fwd > 0.3) speed = CHAR.sprint;
   speed *= inp.slow || 1;
+  // steep terrain: walking uphill is limited to a climb rate instead of running up cliffs
+  if (c.grounded && c.y - world.terrain.heightAt(c.x, c.z) < 0.2) {
+    world.terrain.normalAt(c.x, c.z, tn);
+    const up = -(tn[0] * wd[0] + tn[2] * wd[1]) / Math.max(0.2, tn[1]);
+    if (up * speed > CHAR.climb) speed = Math.max(1.2, CHAR.climb / up);
+  }
   const tx = wd[0] * speed;
   const tz = wd[1] * speed;
   const acc = (c.grounded ? CHAR.accelGround : CHAR.accelAir) * dt;
   c.vx = approach(c.vx, tx, acc);
   c.vz = approach(c.vz, tz, acc);
-  if (inp.jump && c.grounded) {
+  if (c.coyote > 0) c.coyote -= dt;
+  if (inp.jump && (c.grounded || (c.coyote > 0 && c.vy <= 0))) {
     c.vy = CHAR.jumpVel;
     c.grounded = false;
+    c.coyote = 0;
     c.peakY = c.y;
     out.jumped = true;
     if (c.crouch) {
@@ -170,6 +180,7 @@ function stepGround(world, c, inp, dt, out) {
       c.grounded = false;
       c.peakY = c.y;
       c.vy = Math.min(c.vy, 0);
+      c.coyote = CHAR.coyote;
     }
   }
   if (!c.grounded) {
